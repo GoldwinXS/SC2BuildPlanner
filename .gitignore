@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# Local tooling state
+.darkcodeReader/
+.mcp.json
+
+# Personal replay fixtures used during development
+# (contain the developer's battle.net IDs and player names)
+.test-replays/
+
+# Common cruft
+node_modules/
+*.log
