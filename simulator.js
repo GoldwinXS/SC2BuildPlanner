@@ -90,6 +90,17 @@ const SC2_SIM = (() => {
       this.in_progress = new Map();      // entityId -> count
       this.active_mules = 0;             // count of MULEs currently mining
 
+      // Larvae (Zerg only): a continuous pool that accumulates at
+      //   bases × (1/11 natural + 3/29 from a perfect inject queue) per game
+      // second, capped at 19 × bases. Larva-consuming production (drone,
+      // overlord, zergling, roach, hydra, mutalisk, corruptor, infestor,
+      // swarm host, viper, ultralisk) consumes 1 larva at queue time
+      // INSTEAD of taking a hatchery producer slot — that's the parallelism
+      // mechanism for Zerg. Queens still use the hatchery slot (no larva).
+      // Unit morphs (Baneling, Ravager, Lurker, Brood Lord, Overseer)
+      // consume their source unit, not larva.
+      this.larvae = race === 'zerg' ? 3 : 0;
+
       this.timeline = [];                // {id, name, type, race, start, end, mins, gas, kind}
       this.events = [];                  // {t, type, ...}
       this.log = [];                     // {t, msg}
@@ -134,6 +145,20 @@ const SC2_SIM = (() => {
       return Math.min(this.gas_workers, this.gas_capacity) * this.opts.gas_rate;
     }
 
+    // Larva accumulation rate per game-second. Each base (Hatch/Lair/Hive)
+    // contributes 1/11 from natural regen + 3/29 from a perfect inject
+    // queue (assuming 1 idle Queen per base, injecting on cooldown). Capped
+    // at 19 larvae per base (3 base + 16 queued from injects).
+    larvaRate() {
+      if (this.race !== 'zerg') return 0;
+      const bases = this._numBases();
+      return bases * (1 / 11 + 3 / 29);
+    }
+    larvaCapacity() {
+      if (this.race !== 'zerg') return 0;
+      return this._numBases() * 19;
+    }
+
     advanceTo(targetT) {
       while (this.t < targetT - 1e-9) {
         const nextEvt = this.nextEventTime();
@@ -142,6 +167,9 @@ const SC2_SIM = (() => {
         if (dt > 0) {
           this.minerals += this.mineralIncomeRate() * dt;
           this.gas += this.gasIncomeRate() * dt;
+          if (this.race === 'zerg') {
+            this.larvae = Math.min(this.larvaCapacity(), this.larvae + this.larvaRate() * dt);
+          }
           this.t = stepTo;
         }
         while (this.events.length && this.events[0].t <= this.t + 1e-9) {
@@ -210,7 +238,23 @@ const SC2_SIM = (() => {
       this._recordHistory();
     }
 
-    canAfford(e) { return this.minerals + 1e-9 >= e.minerals && this.gas + 1e-9 >= (e.gas || 0); }
+    // True if `e` is a Zerg unit that consumes 1 larva when queued.
+    // Excludes Queen (trained from Hatchery slot) and unit morphs
+    // (Baneling/Ravager/Lurker/Brood Lord/Overseer — those consume their
+    // source unit). Detection: zerg unit whose producedBy is a building.
+    consumesLarva(e) {
+      if (!e || e.race !== 'zerg' || e.type !== 'unit') return false;
+      if (e.id === 'queen') return false;
+      const prod = SC2_DATA.entities[e.producedBy];
+      return !!(prod && prod.type === 'building');
+    }
+
+    canAfford(e) {
+      if (this.minerals + 1e-9 < e.minerals) return false;
+      if (this.gas + 1e-9 < (e.gas || 0)) return false;
+      if (this.consumesLarva(e) && this.larvae + 1e-9 < 1) return false;
+      return true;
+    }
 
     canSatisfyTech(e) {
       for (const p of (e.prerequisites || [])) {
@@ -243,8 +287,13 @@ const SC2_SIM = (() => {
       if (e.type === 'building' && !e.upgradeFrom) {
         return this.live_workers > 0; // need a worker to build
       }
-      // Zerg unit production uses larvae (assumed always available)
-      if (e.race === 'zerg' && e.type === 'unit') return true;
+      // Larva-consuming Zerg units: just need the producer building to
+      // exist; larva availability is checked in canAfford so it joins the
+      // resource-wait branch in findEarliestForEntity (continuous, like
+      // minerals) instead of the producer-wait branch (state-event-driven).
+      if (this.consumesLarva(e)) {
+        return this._countOf(e.producedBy) > 0;
+      }
       if (e.upgradeFrom) {
         // Upgrades need the strict source — an Orbital Command can't be
         // upgraded to another Orbital, even though it counts as a CC for
@@ -329,6 +378,7 @@ const SC2_SIM = (() => {
         live_workers: this.live_workers,
         mineral_rate: this.mineralIncomeRate(),
         gas_rate: this.gasIncomeRate(),
+        larvae: this.larvae,
       };
     }
 
@@ -342,6 +392,7 @@ const SC2_SIM = (() => {
       this.minerals -= e.minerals;
       this.gas -= (e.gas || 0);
       if (e.type === 'unit' && (e.supply || 0) > 0) this.supply_used += e.supply;
+      if (this.consumesLarva(e)) this.larvae = Math.max(0, this.larvae - 1);
 
       // Worker handling for building construction
       if (e.type === 'building' && !e.upgradeFrom) {
@@ -356,10 +407,13 @@ const SC2_SIM = (() => {
         }
       }
 
+      // Larva-consuming Zerg units don't tie up the hatchery (they pop out
+      // of a larva slot, freeing the hatchery to morph more units in
+      // parallel). All other production paths still reserve a slot.
       let producer = null;
       if (e.upgradeFrom) producer = e.upgradeFrom;
       else if (e.type === 'unit' || e.type === 'addon' || e.type === 'upgrade') producer = e.producedBy;
-      if (producer) {
+      if (producer && !this.consumesLarva(e)) {
         const slots = this.producer_slots.get(producer) || [];
         slots.push({ end: this.t + e.buildTime, strict: !!e.upgradeFrom });
         this.producer_slots.set(producer, slots);
@@ -369,7 +423,10 @@ const SC2_SIM = (() => {
 
       const start = this.t;
       const end = this.t + e.buildTime;
-      this._schedule(end, { type: 'complete', entityId, producer });
+      // Don't tie the complete event to a producer slot for larva-consumers —
+      // we never reserved one above.
+      const completeProducer = this.consumesLarva(e) ? null : producer;
+      this._schedule(end, { type: 'complete', entityId, producer: completeProducer });
       this.timeline.push({
         id: entityId, name: e.name, type: e.type, race: e.race,
         start, end, mins: e.minerals, gas: e.gas || 0,
@@ -385,7 +442,7 @@ const SC2_SIM = (() => {
     timeAffordable(e) {
       const minNeed = Math.max(0, e.minerals - this.minerals);
       const gasNeed = Math.max(0, (e.gas || 0) - this.gas);
-      let waitMin = 0, waitGas = 0;
+      let waitMin = 0, waitGas = 0, waitLarva = 0;
       if (minNeed > 0) {
         const r = this.mineralIncomeRate();
         waitMin = r > 0 ? minNeed / r : Infinity;
@@ -394,7 +451,14 @@ const SC2_SIM = (() => {
         const r = this.gasIncomeRate();
         waitGas = r > 0 ? gasNeed / r : Infinity;
       }
-      return Math.max(waitMin, waitGas);
+      if (this.consumesLarva(e)) {
+        const need = Math.max(0, 1 - this.larvae);
+        if (need > 0) {
+          const r = this.larvaRate();
+          waitLarva = r > 0 ? need / r : Infinity;
+        }
+      }
+      return Math.max(waitMin, waitGas, waitLarva);
     }
   }
 

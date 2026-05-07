@@ -4,27 +4,34 @@
    ============================================================ */
 
 :root {
-  --bg-0: #0b0f17;
-  --bg-1: #111826;
-  --bg-2: #1a2334;
-  --bg-3: #232f44;
-  --border: #2a3650;
-  --border-soft: #1f2a3d;
+  /* 2010-era Blizzard SC2 in-game-HUD palette: deep space black with
+     cyan holographic accents and metallic panel grads. Race accents kept
+     but recalibrated to match — Terran cobalt, Protoss amber-gold, Zerg
+     violet, with soft glow tokens for hover/focus states. */
+  --bg-0: #04070d;
+  --bg-1: #0a121d;
+  --bg-2: #0f1a2a;
+  --bg-3: #1a2840;
+  --border: #2c4a7a;
+  --border-soft: #1a2a44;
+  --border-bright: #4a7cb8;
 
-  --text-0: #e6edf7;
-  --text-1: #b3bfd2;
-  --text-2: #7d8aa1;
-  --text-3: #57637a;
+  --text-0: #e6f0ff;
+  --text-1: #b8c6dd;
+  --text-2: #7e92b1;
+  --text-3: #586c8a;
 
-  --accent: #5aa9ff;
-  --accent-soft: rgba(90, 169, 255, 0.15);
+  --accent: #4ec3ff;
+  --accent-soft: rgba(78, 195, 255, 0.16);
+  --accent-glow: rgba(78, 195, 255, 0.45);
+  --accent-deep: #1d6fa8;
 
-  --terran: #4a90e2;
-  --terran-soft: rgba(74, 144, 226, 0.15);
-  --protoss: #ffb84a;
-  --protoss-soft: rgba(255, 184, 74, 0.15);
-  --zerg: #b066d9;
-  --zerg-soft: rgba(176, 102, 217, 0.15);
+  --terran: #4ea3ff;
+  --terran-soft: rgba(78, 163, 255, 0.16);
+  --protoss: #ffc84a;
+  --protoss-soft: rgba(255, 200, 74, 0.16);
+  --zerg: #c074e6;
+  --zerg-soft: rgba(192, 116, 230, 0.16);
 
   --good: #4ade80;
   --warn: #fbbf24;
@@ -33,8 +40,16 @@
   --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
 
-  --radius: 8px;
-  --radius-lg: 12px;
+  --radius: 4px;
+  --radius-lg: 6px;
+
+  /* Sci-fi frame tokens */
+  --panel-grad: linear-gradient(180deg, #16243d 0%, #0c1828 55%, #08111e 100%);
+  --panel-grad-soft: linear-gradient(180deg, #11203a 0%, #0a1424 100%);
+  --bevel-light: rgba(120, 180, 255, 0.2);
+  --bevel-dark: rgba(0, 0, 0, 0.55);
+  --scanline: rgba(78, 195, 255, 0.035);
+  --hud-shadow: 0 0 0 1px rgba(78, 195, 255, 0.08), 0 8px 24px rgba(0, 8, 24, 0.6);
 }
 
 * { box-sizing: border-box; }
@@ -502,12 +517,36 @@ button.ghost {
   margin-bottom: 6px;
   min-height: 24px;
 }
+/* Wrapper that scrolls horizontally when the Gantt's inner min-width
+   exceeds the column. Keeps each bar wide enough to be readable on
+   long builds — without this, bars get so narrow that text clips
+   mid-character. The min-width is computed in JS based on total span. */
+.gantt-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 4px;
+}
 .gantt-label {
   font-size: 13px;
   color: var(--text-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gantt-label .entity-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+}
+.gantt-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .gantt-track {
   position: relative;
@@ -822,6 +861,33 @@ button.ghost {
 .entity-icon.icon-failed .ent-img { display: none; }
 .entity-icon.icon-failed .icon-fallback { display: flex; }
 
+/* Variant-disambiguation badge — anchored bottom-right of the icon.
+   Used when an entity reuses another entity's image (e.g., a Factory
+   Tech Lab uses the Factory icon as its base) so the user can still
+   tell them apart at a glance. The base color is set inline. */
+.entity-icon-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 1px 3px;
+  color: #04111e;
+  border-top-left-radius: 3px;
+  box-shadow: -1px -1px 0 rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+/* Tiny icons (Gantt row labels at 18px etc.) — keep the badge legible
+   without dominating the base. */
+.entity-icon[style*="18px"] .entity-icon-badge,
+.entity-icon[style*="20px"] .entity-icon-badge {
+  font-size: 7px;
+  padding: 0 2px;
+}
+
 /* ----- Resource chart ----- */
 .res-chart-wrap {
   background: var(--bg-2);
@@ -861,6 +927,7 @@ button.ghost {
 .res-chart .line-gas     { stroke: var(--good); }
 .res-chart .line-sup     { stroke: var(--warn); }
 .res-chart .line-sup-max { stroke: var(--warn); stroke-dasharray: 4 3; opacity: 0.5; stroke-width: 1.5; }
+.res-chart .line-workers { stroke: #c9a8ff; stroke-dasharray: 2 3; stroke-width: 1.5; }
 .chart-legend {
   display: flex;
   gap: 18px;
@@ -881,6 +948,7 @@ button.ghost {
 .chart-legend .swatch-gas     { background: var(--good); }
 .chart-legend .swatch-sup     { background: var(--warn); }
 .chart-legend .swatch-sup-max { background: linear-gradient(90deg, var(--warn) 50%, transparent 50%); background-size: 6px 3px; opacity: 0.6; }
+.chart-legend .swatch-workers { background: linear-gradient(90deg, #c9a8ff 60%, transparent 60%); background-size: 5px 3px; }
 .chart-legend .swatch-blocked { background: #d04545; height: 5px; border-radius: 1px; }
 .res-chart .supply-blocked-band { fill: #d04545; opacity: 0.85; cursor: help; }
 .chart-legend-hint { color: var(--text-3); font-style: italic; margin-left: auto; }
@@ -899,6 +967,7 @@ button.ghost {
 .res-chart .dot-min { stroke: #a3c2eb; }
 .res-chart .dot-gas { stroke: var(--good); }
 .res-chart .dot-sup { stroke: var(--warn); }
+.res-chart .dot-workers { stroke: #c9a8ff; }
 
 .chart-tooltip {
   position: absolute;
@@ -962,10 +1031,14 @@ button.ghost {
 /* Wide layout: both columns get their own viewport-bounded scroll surface.
    This way the page itself doesn't scroll on edit — the editor stays put
    on the left, and the result column preserves its scrollTop across the
-   live re-render so you don't lose your place. */
+   live re-render so you don't lose your place.
+   Inside the editor column the controls (head + add + palette) sit
+   in a non-scrolling fixed region at the top, and the build-order list
+   is the only thing that scrolls — so the icon palette and search bar
+   are always one click away no matter how long the list gets. */
 @media (min-width: 1100px) {
   .forge-layout {
-    grid-template-columns: minmax(420px, 460px) minmax(0, 1fr);
+    grid-template-columns: minmax(440px, 500px) minmax(0, 1fr);
     align-items: start;
     gap: 20px;
   }
@@ -975,13 +1048,28 @@ button.ghost {
     max-height: calc(100vh - 24px);
     overflow-y: auto;
   }
-  /* Single scroll surface inside the editor column — drop inner caps. */
-  .forge-editor .forge-list { max-height: none; }
-  .forge-editor .forge-browse-grid { max-height: none; }
+  .forge-column.forge-editor {
+    overflow-y: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .forge-editor-fixed {
+    flex: 0 0 auto;
+  }
+  .forge-editor .forge-list {
+    flex: 1 1 auto;
+    min-height: 120px;
+    max-height: none;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .forge-editor .forge-browse-grid {
+    max-height: 160px;
+  }
 }
 @media (min-width: 1300px) {
   .forge-layout {
-    grid-template-columns: minmax(460px, 500px) minmax(0, 1fr);
+    grid-template-columns: minmax(480px, 540px) minmax(0, 1fr);
   }
 }
 .forge-editor-head {
@@ -1333,11 +1421,190 @@ button.ghost {
   display: flex;
   gap: 6px;
   align-items: stretch;
-  border-top: 1px solid var(--border-soft);
-  padding-top: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
 .forge-add input[type=number] { width: 64px; min-width: 64px; }
 .forge-add .combo-search input { padding: 6px 8px; font-size: 13px; }
+.forge-add .combo-search input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+
+/* Density toggle for the palette — compact mode = icon-only tiles */
+.palette-density-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-left: auto;
+  cursor: pointer;
+  user-select: none;
+}
+.palette-density-toggle input { accent-color: var(--accent); }
+
+/* Tier groupings inside the browse palette — a thin label band per tier
+   so users see which tech depth a unit/building sits at without having
+   to read prereqs in tooltips. */
+.palette-tier {
+  display: contents;
+}
+.palette-tier-label {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-3);
+  font-weight: 600;
+  padding: 6px 4px 2px;
+  border-top: 1px dashed var(--border-soft);
+  margin-top: 2px;
+}
+.palette-tier-label:first-child { border-top: 0; margin-top: 0; padding-top: 2px; }
+
+/* Compact mode: icons-as-buttons. No outer frame, no border, no corner
+   accent — just the portrait. Hover gets a subtle accent glow so the
+   button affordance is still discoverable. */
+.forge-browse-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 2px;
+}
+.forge-browse-grid.compact .browse-tile {
+  padding: 2px;
+  gap: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.forge-browse-grid.compact .browse-tile::before { display: none; }
+.forge-browse-grid.compact .browse-tile:hover {
+  background: rgba(78, 195, 255, 0.12);
+  border: 0;
+  box-shadow: 0 0 10px var(--accent-soft);
+  transform: none;
+}
+.forge-browse-grid.compact .browse-tile .tile-name,
+.forge-browse-grid.compact .browse-tile .tile-cost { display: none; }
+.forge-browse-grid.compact .browse-tile .entity-icon { width: 32px; height: 32px; }
+.forge-browse-grid.compact .palette-tier-label {
+  padding: 4px 2px 1px;
+  font-size: 9px;
+}
+
+/* Inline "+" insert affordance: a thin row that lives between every
+   build-order entry. Shows a faint divider on hover, then a small
+   "+ insert here" pill on click that opens the quick-insert popover.
+   Ensures users can drop a step at any spot without dragging or
+   reordering — solves the "lost in a long list" problem. */
+.forge-insert {
+  height: 6px;
+  position: relative;
+  cursor: copy;
+  margin: -2px 0;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+.forge-insert::before {
+  content: '';
+  position: absolute;
+  left: 36px;
+  right: 8px;
+  top: 50%;
+  height: 1px;
+  background: transparent;
+  transition: background 0.1s;
+}
+.forge-insert:hover { background: rgba(90, 169, 255, 0.06); }
+.forge-insert:hover::before { background: var(--accent); }
+.forge-insert::after {
+  content: '+ insert';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--bg-0);
+  padding: 0 6px;
+  border-radius: 8px;
+  opacity: 0;
+  transition: opacity 0.1s;
+  pointer-events: none;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.forge-insert:hover::after { opacity: 1; }
+.forge-insert.active { background: rgba(90, 169, 255, 0.12); }
+.forge-insert.active::before { background: var(--accent); }
+
+/* Quick-insert popover — anchored next to the insert point. Shows the
+   user's recent items first, then a tier-grouped icon grid for the
+   current race. Click an icon to insert at that index. */
+.forge-insert-popover {
+  position: absolute;
+  z-index: 50;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  padding: 10px 12px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: 360px;
+  overflow-y: auto;
+}
+.forge-insert-popover h5 {
+  margin: 0 0 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.forge-insert-popover h5:not(:first-child) { margin-top: 12px; }
+.forge-insert-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 2px;
+}
+.forge-insert-popover-grid .browse-tile {
+  padding: 2px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.forge-insert-popover-grid .browse-tile::before { display: none; }
+.forge-insert-popover-grid .browse-tile:hover {
+  background: rgba(78, 195, 255, 0.12);
+  border: 0;
+  box-shadow: 0 0 10px var(--accent-soft);
+  transform: none;
+}
+.forge-insert-popover-grid .browse-tile .tile-name,
+.forge-insert-popover-grid .browse-tile .tile-cost { display: none; }
+.forge-insert-popover-grid .browse-tile .entity-icon { width: 32px; height: 32px; }
+.forge-insert-popover-search {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-0);
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  font-family: inherit;
+}
+.forge-insert-popover-search:focus { outline: 2px solid var(--accent); }
+.forge-insert-popover-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
+.forge-insert-popover-close:hover { color: var(--text-0); }
 
 .forge-warnings {
   background: rgba(251, 191, 36, 0.08);
@@ -1355,6 +1622,23 @@ button.ghost {
   font-size: 12px;
   color: var(--text-1);
   font-family: var(--mono);
+  padding: 2px 0;
+}
+.forge-insights {
+  background: rgba(90, 169, 255, 0.06);
+  border: 1px solid rgba(90, 169, 255, 0.25);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 14px 0;
+}
+.forge-insights h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--accent);
+}
+.forge-insight {
+  font-size: 12px;
+  color: var(--text-1);
   padding: 2px 0;
 }
 
@@ -1897,6 +2181,34 @@ code {
   border-radius: 1px;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
 }
+
+/* Orphan lane — actions that had no eligible producer free in time
+   (e.g., a 2nd Orbital Command queued without a 2nd Command Center
+   ready). Styled distinctly so users see the mismatch instead of
+   thinking the action landed on a real producer. */
+.prod-util-track-orphan {
+  background: rgba(248, 113, 113, 0.15);
+  border: 1px dashed rgba(248, 113, 113, 0.5);
+  height: 14px;
+  display: flex;
+  align-items: center;
+  padding-left: 6px;
+}
+.prod-util-orphan-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--bad);
+  font-family: var(--mono);
+  pointer-events: none;
+  z-index: 2;
+  background: var(--bg-0);
+  padding: 0 4px;
+}
+.prod-util-seg-orphan {
+  background: var(--bad);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3), 0 0 4px rgba(248, 113, 113, 0.5);
+}
 .prod-util-axis-row {
   display: flex;
   gap: 8px;
@@ -1961,3 +2273,1373 @@ code {
 .prod-util-key.busy { background: var(--good); }
 .prod-util-key.idle { background: rgba(251, 191, 36, 0.45); }
 .prod-util-key.offline { background: var(--bg-3); }
+
+/* ----- Share / SALT modal ----- */
+.share-modal { padding: 20px 22px; }
+.share-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.share-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.share-tab:hover { color: var(--text-1); }
+.share-tab.active {
+  color: var(--text-1);
+  border-bottom-color: var(--accent);
+}
+.share-pane { display: none; }
+.share-pane.active { display: block; }
+.share-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.share-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+  min-height: 60px;
+  white-space: pre;
+}
+.share-textarea.share-textarea-tall {
+  /* Tall enough to show many rows without scrolling inside the box,
+     but capped so the modal doesn't outgrow the viewport. */
+  min-height: 300px;
+  max-height: 60vh;
+}
+.share-textarea.share-mono { word-break: break-all; white-space: pre-wrap; }
+.share-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+.share-skipped {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.share-section { margin-bottom: 18px; }
+.share-section-head {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.share-foot {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+/* ================================================================
+   PASS 2 — 2010 Blizzard SC2 era theme
+   Inspired by the in-game Terran HUD: deep space black with cyan
+   holographic accents, metallic frame panels with beveled corners,
+   geometric uppercase headings, scanline ambience.
+   These overrides come after the base styles so they win the cascade
+   without requiring surgical edits to every existing selector.
+   ================================================================ */
+
+/* Body backdrop: a dark-blue radial vignette over space-black, with a
+   very subtle scanline pattern. Fixed so it doesn't scroll. */
+html, body {
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(40, 90, 160, 0.18), transparent 60%),
+    radial-gradient(ellipse at 80% 110%, rgba(20, 60, 120, 0.12), transparent 55%),
+    var(--bg-0);
+  background-attachment: fixed;
+  position: relative;
+}
+body::before {
+  /* CRT-style scanline overlay sits ABOVE everything but is wholly
+     transparent except for hairlines, so the page is fully usable
+     underneath. pointer-events:none lets clicks pass through to content. */
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0,
+    transparent 2px,
+    var(--scanline) 2px,
+    var(--scanline) 3px
+  );
+  z-index: 9999;
+  opacity: 0.4;
+}
+
+/* ----- Site header: command-bridge feel ----- */
+.site-header {
+  background:
+    linear-gradient(180deg, rgba(30, 60, 110, 0.25) 0%, rgba(10, 18, 30, 0.6) 100%),
+    var(--bg-0);
+  border-bottom: 1px solid var(--border);
+  box-shadow:
+    inset 0 -1px 0 rgba(78, 195, 255, 0.18),
+    0 1px 0 rgba(0, 0, 0, 0.5),
+    0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 28px 0 22px;
+  position: relative;
+}
+.site-header::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: -2px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0, var(--accent) 20%, var(--accent) 80%, transparent 100%);
+  opacity: 0.4;
+  filter: blur(1px);
+}
+.site-header h1 {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: var(--text-0);
+  text-shadow: 0 0 18px rgba(78, 195, 255, 0.4), 0 0 1px rgba(78, 195, 255, 0.6);
+  position: relative;
+  padding-left: 18px;
+}
+.site-header h1::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 6px; bottom: 6px;
+  width: 4px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-deep));
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.subtitle {
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-size: 11px;
+  color: var(--text-2);
+  font-family: var(--mono);
+}
+
+/* ----- Mode nav: tactical command tabs ----- */
+.mode-nav {
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(78, 195, 255, 0.06);
+}
+.mode-nav .container {
+  display: flex;
+  gap: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.mode-btn {
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  color: var(--text-2);
+  padding: 14px 22px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+  font-weight: 600;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s, background 0.15s;
+}
+.mode-btn::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transition: transform 0.15s;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.mode-btn:hover { color: var(--text-0); background: rgba(78, 195, 255, 0.04); }
+.mode-btn.active {
+  color: var(--accent);
+  background: linear-gradient(180deg, rgba(78, 195, 255, 0.08), transparent);
+}
+.mode-btn.active::after { transform: scaleX(1); }
+.mode-btn:first-child { border-left: 1px solid var(--border-soft); }
+
+/* ----- Panel headings ----- */
+.panel-head h2 {
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  font-size: 18px;
+  color: var(--text-0);
+  font-weight: 700;
+  margin: 0 0 6px;
+  position: relative;
+  padding-left: 14px;
+}
+.panel-head h2::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 4px; bottom: 4px;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-deep));
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+.panel-head p {
+  color: var(--text-2);
+  font-size: 13px;
+  max-width: 720px;
+}
+
+/* ----- Panels: metallic HUD frame ----- */
+.forge-column,
+.notes-block {
+  background: var(--panel-grad);
+  border: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 var(--bevel-light),
+    inset 0 -1px 0 var(--bevel-dark),
+    var(--hud-shadow);
+  position: relative;
+  border-radius: 0;
+}
+.forge-column::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 14px; height: 14px;
+  background: linear-gradient(135deg, var(--accent) 0 50%, transparent 50%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.forge-column::after {
+  content: '';
+  position: absolute;
+  bottom: 0; right: 0;
+  width: 14px; height: 14px;
+  background: linear-gradient(315deg, var(--accent) 0 50%, transparent 50%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.forge-h3 {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--accent);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 6px;
+  margin-bottom: 10px;
+}
+
+/* ----- Buttons: clipped corners, holo highlight.
+   Targeting via :is() is too broad — there are dozens of small button
+   types in this app. Set defaults that look good on the primary action
+   buttons (Add, etc.), then back off via the .ghost class for the rest. */
+/* Primary action buttons.
+   Border is OFF — a 1px border can't follow a clip-path diagonal cut, so
+   the corner reads as "broken." The gradient + inset highlights/shadows
+   already give the button a clean, well-defined edge. Smaller corner
+   cuts (5px) for proportions on these short buttons. */
+.forge-add #forge-add-btn,
+#scout-add-btn,
+.modal-actions button[data-act="ok"] {
+  background: linear-gradient(180deg, #2c69a8 0%, #1d4d80 100%);
+  color: #ecf6ff;
+  border: 0;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+  box-shadow:
+    inset 0 1px 0 rgba(180, 220, 255, 0.4),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+    0 0 10px rgba(78, 195, 255, 0.2);
+  transition: filter 0.1s, box-shadow 0.1s;
+}
+.forge-add #forge-add-btn:hover,
+#scout-add-btn:hover,
+.modal-actions button[data-act="ok"]:hover {
+  filter: brightness(1.15);
+  box-shadow:
+    inset 0 1px 0 rgba(200, 230, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+    0 0 14px rgba(78, 195, 255, 0.45);
+}
+button.ghost {
+  background: linear-gradient(180deg, rgba(40, 70, 110, 0.4), rgba(15, 28, 48, 0.4));
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+button.ghost:hover {
+  background: linear-gradient(180deg, rgba(60, 100, 160, 0.5), rgba(20, 40, 70, 0.5));
+  border-color: var(--accent);
+  color: var(--text-0);
+}
+
+/* ----- Form inputs.
+   All form controls get the dark HUD background and crisp 1px border.
+   Native number-input spinners and the OS-themed select chevron are
+   replaced with custom themed alternatives so nothing looks "browser
+   default." Number inputs still accept arrow-key and scroll-wheel
+   increment natively. */
+input[type="text"],
+input[type="number"],
+select,
+textarea {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  color: var(--text-0);
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 0;
+  transition: border-color 0.1s, box-shadow 0.1s;
+}
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus,
+textarea:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 10px var(--accent-soft);
+}
+
+/* Number inputs — keep the native up/down spinner so the field is
+   immediately functional. Mono digits + right-align so the value reads
+   as a counter. The native spinner colors are OS-themed and slightly
+   off the HUD palette, but the alternative (custom +/- buttons or no
+   spinner at all) was strictly worse for usability. */
+input[type="number"] {
+  font-family: var(--mono);
+  text-align: right;
+}
+
+/* Selects — strip the OS chevron and draw our own in accent cyan via an
+   inline SVG background. The encoded SVG keeps everything dependency-free. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M0 0 L5 6 L10 0 Z' fill='%234ec3ff'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 9px 6px;
+  padding-right: 28px;
+  cursor: pointer;
+}
+select:focus {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M0 0 L5 6 L10 0 Z' fill='%23a8e0ff'/></svg>");
+}
+select::-ms-expand { display: none; }
+/* The dropdown menu items themselves use OS styling on most browsers —
+   only Chrome/Edge let you style optgroup/option. Set readable colors
+   so the open list at least matches the dark theme on those engines. */
+select option,
+select optgroup { background: var(--bg-0); color: var(--text-0); }
+
+/* Repeat-count input on each forge row keeps the same theming */
+.forge-repeat {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  color: var(--text-0);
+  font-family: var(--mono);
+  text-align: right;
+  border-radius: 0;
+}
+.forge-repeat:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* ----- Browse / reference tabs.
+   No clip-path here — these inactive chips have semi-transparent bg, so a
+   diagonal corner cut produces a borderless edge along the diagonal that
+   reads as "broken." Sharp 1px rectangles with a thin glow border keep
+   the sci-fi feel without that artifact. */
+.browse-tab,
+.ref-tab {
+  background: linear-gradient(180deg, rgba(40, 70, 110, 0.3), rgba(15, 28, 48, 0.3));
+  border: 1px solid var(--border-soft);
+  color: var(--text-2);
+  padding: 5px 12px;
+  border-radius: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.browse-tab:hover,
+.ref-tab:hover {
+  background: linear-gradient(180deg, rgba(60, 100, 160, 0.4), rgba(20, 40, 70, 0.4));
+  color: var(--text-0);
+  border-color: var(--border-bright);
+}
+.browse-tab.active,
+.ref-tab.active {
+  background: linear-gradient(180deg, var(--accent), var(--accent-deep));
+  color: #04111e;
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* ----- Browse tiles: HUD targeting cell ----- */
+.browse-tile {
+  background: linear-gradient(180deg, rgba(20, 40, 70, 0.6), rgba(10, 20, 35, 0.6));
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+  position: relative;
+  transition: border-color 0.1s, background 0.1s, transform 0.1s, box-shadow 0.1s;
+}
+.browse-tile::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  border-style: solid;
+  border-width: 8px 8px 0 0;
+  border-color: var(--accent) transparent transparent transparent;
+  opacity: 0.35;
+  pointer-events: none;
+  transition: opacity 0.1s;
+}
+.browse-tile:hover {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(40, 80, 130, 0.7), rgba(15, 35, 60, 0.7));
+  box-shadow: 0 0 12px var(--accent-soft);
+  transform: translateY(-1px);
+}
+.browse-tile:hover::before { opacity: 0.9; }
+.browse-tile .tile-name {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+}
+.browse-tile .tile-cost {
+  font-size: 9px;
+  color: var(--text-3);
+}
+
+/* ----- Build-order rows: console line items ----- */
+.forge-row {
+  background: linear-gradient(180deg, rgba(20, 40, 70, 0.4), rgba(10, 20, 35, 0.5));
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+  border-left: 3px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(78, 195, 255, 0.04);
+}
+.forge-row:hover {
+  background: linear-gradient(180deg, rgba(40, 75, 120, 0.5), rgba(20, 40, 70, 0.5));
+  border-color: var(--border-bright);
+  border-left-color: var(--accent);
+}
+.forge-num {
+  font-family: var(--mono);
+  color: var(--accent);
+  text-shadow: 0 0 6px var(--accent-soft);
+}
+.forge-name {
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* ----- Quick chips & priority chips.
+   Same rationale as the tabs above — no clip-path on transparent
+   backgrounds. Sharp rectangles + accent glow on hover. */
+.quick-chip,
+.priority-chip {
+  background: linear-gradient(180deg, rgba(40, 70, 110, 0.4), rgba(15, 28, 48, 0.4));
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.quick-chip:hover {
+  background: linear-gradient(180deg, rgba(60, 100, 160, 0.5), rgba(20, 40, 70, 0.5));
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-soft);
+}
+
+/* ----- Race chip pills ----- */
+.race-chip {
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 0;
+}
+
+/* ----- Result card: telemetry feel.
+   The result-card sits inside the right forge-column which already has
+   corner triangles, so we don't double up. Race accent gets a top stripe. */
+.result-card {
+  background: linear-gradient(180deg, rgba(15, 28, 48, 0.4), rgba(8, 14, 24, 0.6));
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+  padding: 18px;
+  margin: 0;
+  position: relative;
+}
+.result-card.race-terran  { border-top: 2px solid var(--terran); }
+.result-card.race-protoss { border-top: 2px solid var(--protoss); }
+.result-card.race-zerg    { border-top: 2px solid var(--zerg); }
+.target-name {
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+.time-label {
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 9px;
+  color: var(--text-3);
+}
+.time-big {
+  font-family: var(--mono);
+  color: var(--accent);
+  text-shadow: 0 0 12px var(--accent-glow);
+  font-weight: 700;
+}
+
+/* ----- Cost pills: HUD readouts (sharp rectangles, no clip-path).
+   Same reason as the chip rules above — semi-transparent backgrounds
+   don't pair well with diagonal clip cuts. */
+.cost-pill {
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(30, 50, 80, 0.6), rgba(10, 18, 32, 0.7));
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-size: 11px;
+  padding: 4px 10px;
+}
+.cost-pill .label {
+  font-size: 9px;
+  color: var(--text-3);
+  margin-right: 4px;
+}
+
+/* ----- Gantt bars: HUD progress meters ----- */
+.gantt-track {
+  background: rgba(8, 16, 30, 0.7);
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+  height: 22px;
+  position: relative;
+  overflow: hidden;
+}
+.gantt-track::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent 8px,
+    rgba(78, 195, 255, 0.04) 8px,
+    rgba(78, 195, 255, 0.04) 9px
+  );
+  pointer-events: none;
+}
+.gantt-bar {
+  border-radius: 0;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 60%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 0 6px rgba(0, 0, 0, 0.3);
+}
+.gantt-label-text {
+  letter-spacing: 0.3px;
+}
+
+/* ----- Tables ----- */
+.path-table {
+  border: 1px solid var(--border-soft);
+  background: rgba(8, 14, 26, 0.5);
+}
+.path-table thead th {
+  background: linear-gradient(180deg, rgba(30, 60, 100, 0.5), rgba(10, 22, 40, 0.7));
+  text-transform: uppercase;
+  letter-spacing: 1.3px;
+  font-size: 10px;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+}
+.path-table tbody tr:hover { background: rgba(78, 195, 255, 0.04); }
+
+/* ----- Headings inside result panels ----- */
+.path-section h3 {
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-size: 12px;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 5px;
+  margin-bottom: 10px;
+  position: relative;
+  padding-left: 12px;
+}
+.path-section h3::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 2px; bottom: 6px;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 4px var(--accent-glow);
+}
+
+/* ----- Roster grid items ----- */
+.roster-group {
+  background: linear-gradient(180deg, rgba(15, 28, 48, 0.6), rgba(8, 14, 24, 0.8));
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+  padding: 10px;
+}
+.roster-group-head {
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+.roster-group-name {
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.roster-group-total {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-1);
+}
+.roster-item {
+  background: rgba(15, 28, 48, 0.4);
+  border: 1px solid transparent;
+  transition: border-color 0.1s, background 0.1s;
+}
+.roster-item:hover {
+  border-color: var(--accent);
+  background: rgba(40, 80, 130, 0.4);
+  box-shadow: 0 0 8px var(--accent-soft);
+}
+.roster-count {
+  background: var(--accent);
+  color: #04111e;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 0;
+  clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px);
+}
+
+/* ----- Footer ----- */
+.site-footer {
+  background: var(--bg-0);
+  border-top: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(78, 195, 255, 0.1);
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 14px 0;
+}
+
+/* ----- Scrollbar (webkit) ----- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-0); }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--accent-deep), #0d3a5e);
+  border: 1px solid var(--bg-0);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--accent), var(--accent-deep));
+}
+
+/* ----- Notes block ----- */
+.notes-block {
+  padding: 16px 18px;
+}
+.notes-block h3 {
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-size: 12px;
+  color: var(--accent);
+  margin: 0 0 8px;
+}
+.notes-block ul li {
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 3px 0 3px 14px;
+  position: relative;
+  list-style: none;
+}
+.notes-block ul {
+  padding-left: 0;
+}
+.notes-block ul li::before {
+  content: '◤';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  color: var(--accent);
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+/* ----- Forge browse-grid heading and palette tier labels ----- */
+.forge-browse-label {
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.palette-tier-label {
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+}
+
+/* ----- Modals ----- */
+.modal {
+  background: var(--panel-grad);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow:
+    inset 0 1px 0 var(--bevel-light),
+    inset 0 -1px 0 var(--bevel-dark),
+    0 30px 80px rgba(0, 0, 0, 0.7),
+    0 0 30px var(--accent-soft);
+  position: relative;
+}
+.modal::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 18px; height: 18px;
+  background: linear-gradient(135deg, var(--accent) 0 50%, transparent 50%);
+  opacity: 0.7;
+}
+.modal::after {
+  content: '';
+  position: absolute;
+  bottom: 0; right: 0;
+  width: 18px; height: 18px;
+  background: linear-gradient(315deg, var(--accent) 0 50%, transparent 50%);
+  opacity: 0.7;
+}
+.modal h4 {
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--accent);
+  font-size: 14px;
+}
+
+/* ----- Toggle (no clip-path — see chip rules above) ----- */
+.toggle {
+  background: linear-gradient(180deg, rgba(20, 40, 70, 0.4), rgba(8, 16, 30, 0.5));
+  border: 1px solid var(--border-soft);
+  padding: 6px 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 11px;
+}
+
+/* ----- Mode panel container ----- */
+.mode-panel {
+  padding: 22px 0;
+}
+.panel-head {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* ----- Window Lookup result items — icon + name + time in compact tiles.
+   The whole list of "what you can have by T:TT" reads as a sorted icon
+   grid grouped by type. */
+.window-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px;
+}
+.window-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(180deg, rgba(20, 40, 70, 0.4), rgba(10, 20, 35, 0.5));
+  border: 1px solid var(--border-soft);
+  padding: 7px 10px;
+  font-size: 13px;
+  transition: border-color 0.1s, background 0.1s;
+}
+.window-item:hover {
+  border-color: var(--border-bright);
+  background: linear-gradient(180deg, rgba(40, 75, 120, 0.5), rgba(20, 40, 70, 0.5));
+}
+.window-item.unreachable { opacity: 0.45; }
+.window-item .entity-icon { width: 32px; height: 32px; flex: 0 0 auto; }
+.window-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.window-item-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.window-item-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.window-group-count {
+  margin-left: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* ----- Reference table icons — small portrait next to each row name. */
+.ref-table .col-name-with-icon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ref-row-icon { display: inline-flex; flex: 0 0 auto; }
+.ref-row-icon .entity-icon { width: 24px; height: 24px; }
+
+/* ----- Entity picker — shared icon-grid component used on Tech Explorer
+   and Scout Translator. Same visual language as the Forge palette but
+   includes a race-tab strip for pages that span all three races. */
+.entity-picker {
+  background: var(--panel-grad);
+  border: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 var(--bevel-light),
+    inset 0 -1px 0 var(--bevel-dark),
+    var(--hud-shadow);
+  padding: 14px 16px;
+  margin: 16px 0;
+}
+.entity-picker h3 {
+  margin: 0 0 12px;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 6px;
+}
+.entity-picker-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.entity-picker-races,
+.entity-picker-types {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.race-tab {
+  background: linear-gradient(180deg, rgba(40, 70, 110, 0.3), rgba(15, 28, 48, 0.3));
+  border: 1px solid var(--border-soft);
+  color: var(--text-2);
+  padding: 5px 14px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.race-tab:hover { color: var(--text-0); border-color: var(--border-bright); }
+.race-tab.active { color: #04111e; border-color: var(--accent); }
+.race-tab[data-race="terran"].active  { background: var(--terran); }
+.race-tab[data-race="protoss"].active { background: var(--protoss); }
+.race-tab[data-race="zerg"].active    { background: var(--zerg); }
+.entity-picker-hint {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-family: var(--mono);
+}
+.entity-picker-grid {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.entity-picker-grid .browse-tile.is-selected {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(78, 195, 255, 0.2), rgba(40, 80, 130, 0.4));
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* ----- Collapsible sections.
+   Any element with class="collapsible-section" and data-section-id
+   becomes click-to-toggle on its h3. State persists in localStorage so
+   the user's preference survives reloads. The chevron rotates and the
+   content (everything that isn't an h3) hides when collapsed. */
+.collapsible-section h3 {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.collapsible-section h3::after {
+  content: '▾';
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 11px;
+  transition: transform 0.15s, color 0.1s;
+  display: inline-block;
+}
+.collapsible-section h3:hover::after { color: var(--accent); }
+.collapsible-section[data-collapsed="true"] h3::after { transform: rotate(-90deg); }
+.collapsible-section[data-collapsed="true"] h3 {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom-color: transparent;
+}
+.collapsible-section[data-collapsed="true"] > :not(h3) {
+  display: none;
+}
+
+/* ----- Editor column layout — single section divider above the list.
+   Removed the duplicate "Add Unit" header (the search placeholder
+   self-labels). The palette grid is collapsible so users can give the
+   Build Order list the full column when they're working on a long build. */
+
+/* Tighten the row that holds Swap / Fill Workers / Priority shift +
+   the recent chips strip — they share a row instead of stacking. */
+.forge-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-soft);
+}
+.forge-action-row .forge-quick-add {
+  margin-left: auto;
+  border-top: 0;
+  padding: 0;
+  flex: 1 1 200px;
+  justify-content: flex-end;
+}
+
+/* Palette collapse toggle: chevron in the palette head. Clicking it
+   sets data-collapsed on .forge-browse, which hides the grid and gives
+   the Build Order list the full column. */
+.palette-collapse-toggle {
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--text-2);
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.1s, border-color 0.1s, background 0.1s, transform 0.15s;
+}
+.palette-collapse-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(78, 195, 255, 0.08);
+}
+.forge-browse[data-collapsed="true"] .forge-browse-grid { display: none; }
+.forge-browse[data-collapsed="true"] .palette-collapse-toggle { transform: rotate(-90deg); }
+.forge-browse[data-collapsed="true"] .palette-density-toggle { display: none; }
+
+.forge-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 0 0 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.forge-section-title {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 2.5px;
+  font-weight: 700;
+  color: var(--accent);
+  text-shadow: 0 0 6px var(--accent-soft);
+  position: relative;
+  padding-left: 14px;
+}
+.forge-section-title::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 2px; bottom: 2px;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-deep));
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+.forge-section-hint {
+  font-size: 10px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-family: var(--mono);
+}
+.forge-section-hint kbd {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-0);
+  margin: 0 1px;
+}
+.forge-section-divider {
+  margin: 16px -16px 12px;
+  padding: 10px 18px;
+  background:
+    linear-gradient(180deg, rgba(78, 195, 255, 0.12) 0%, rgba(78, 195, 255, 0.04) 100%),
+    linear-gradient(180deg, rgba(20, 40, 75, 0.6), rgba(8, 18, 32, 0.6));
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 var(--bevel-light),
+    inset 0 -1px 0 var(--bevel-dark),
+    0 0 12px rgba(78, 195, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: relative;
+  flex: 0 0 auto;
+}
+.forge-section-divider::before {
+  /* Glowing top edge — distinguishes the divider as a "system band" */
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0, var(--accent) 30%, var(--accent) 70%, transparent 100%);
+  opacity: 0.6;
+  filter: blur(0.5px);
+}
+.forge-section-divider .forge-section-title {
+  font-size: 13px;
+  letter-spacing: 3px;
+}
+.forge-section-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+  background: rgba(8, 16, 30, 0.6);
+  border: 1px solid var(--border-soft);
+  padding: 2px 8px;
+  letter-spacing: 1px;
+}
+
+/* Quick-add chips between the add bar and the palette: a compact strip
+   labeled "Recent" so its purpose is obvious. */
+.forge-quick-add {
+  margin: 8px 0 4px;
+  padding: 6px 0;
+  border-top: 1px dashed var(--border-soft);
+}
+
+/* The palette browse-head rebalances now that "Palette" label is gone —
+   tabs flush left, density toggle flush right. */
+.forge-browse {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-soft);
+}
+.forge-browse-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+/* ----- Insert popover ----- */
+.forge-insert-popover {
+  background: var(--panel-grad);
+  border: 1px solid var(--border-bright);
+  border-radius: 0;
+  box-shadow:
+    inset 0 1px 0 var(--bevel-light),
+    0 20px 60px rgba(0, 0, 0, 0.7),
+    0 0 30px var(--accent-soft);
+  position: absolute;
+}
+.forge-insert-popover::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 14px; height: 14px;
+  background: linear-gradient(135deg, var(--accent) 0 50%, transparent 50%);
+  opacity: 0.7;
+}
+.forge-insert-popover h5 {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+
+/* ================================================================
+   MOBILE — tighter type, denser controls, larger tap targets.
+   Two breakpoints:
+     - 900px and below: tablet / large phone landscape
+     - 600px and below: phone portrait
+   Scanlines, decorative corner triangles, big letter-spacing all
+   reduce on small screens to cut visual noise. Tap targets stay
+   above the 36px iOS/Android minimum on the controls users actually
+   touch (rows, chips, buttons).
+   ================================================================ */
+
+@media (max-width: 900px) {
+  .container { padding: 0 14px; }
+  .site-header { padding: 18px 0 14px; }
+  .site-header h1 {
+    font-size: 22px;
+    letter-spacing: 2px;
+    padding-left: 12px;
+  }
+  .site-header h1::before { width: 3px; top: 4px; bottom: 4px; }
+  .subtitle { font-size: 10px; letter-spacing: 1px; }
+  .global-controls { margin-top: 10px; gap: 12px; }
+
+  .panel-head h2 { font-size: 16px; letter-spacing: 2px; padding-left: 10px; }
+  .panel-head p { font-size: 12px; }
+
+  /* Mode nav becomes a horizontal scroller so all 5 tabs stay accessible
+     without wrapping or shrinking text below readable size. */
+  .mode-nav .container {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+  }
+  .mode-nav .container::-webkit-scrollbar { display: none; }
+  .mode-btn {
+    padding: 12px 14px;
+    font-size: 11px;
+    letter-spacing: 1.2px;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  /* Forge controls row: tighten + ensure each control has a comfortable
+     tap target. Buttons grow to 38px min height. */
+  .controls-row {
+    gap: 8px;
+  }
+  .controls-row label,
+  .controls-row select,
+  .controls-row input {
+    font-size: 12px;
+  }
+  button.ghost {
+    min-height: 36px;
+    padding: 7px 12px;
+  }
+  .forge-add #forge-add-btn,
+  #scout-add-btn { min-height: 38px; }
+
+  /* Section heads/dividers: smaller, less aggressive letter-spacing */
+  .forge-section-title { font-size: 11px; letter-spacing: 2px; }
+  .forge-section-divider {
+    margin: 12px -14px 10px;
+    padding: 8px 14px;
+  }
+  .forge-section-hint { display: none; }
+
+  /* Forge rows: bigger font, more vertical breathing room for thumbs */
+  .forge-row {
+    grid-template-columns: 22px 26px minmax(0, 1fr) auto;
+    padding: 10px 10px;
+    font-size: 13px;
+    min-height: 44px;
+  }
+  .forge-row .forge-handle { font-size: 16px; }
+  .forge-row .forge-del {
+    min-width: 32px;
+    min-height: 32px;
+    font-size: 22px;
+  }
+  .forge-repeat { width: 52px; height: 32px; }
+
+  /* Inline insert points: bigger hit zone, since CSS hover doesn't
+     translate to touch. The "+ insert" pill stays visible on tap. */
+  .forge-insert {
+    height: 14px;
+    margin: 0;
+  }
+  .forge-insert::before { left: 16px; right: 4px; background: var(--border-soft); }
+  .forge-insert::after {
+    opacity: 0.7;
+    font-size: 10px;
+  }
+
+  /* Palette: bigger tiles by default since fingers are bigger than
+     mouse cursors. Compact mode still works for power users. */
+  .forge-browse-grid {
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    gap: 5px;
+    max-height: 200px;
+  }
+  .browse-tile { padding: 6px 4px; min-height: 64px; }
+  .browse-tile .entity-icon { width: 32px; height: 32px; }
+  .forge-browse-grid.compact {
+    grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  }
+  .forge-browse-grid.compact .browse-tile { min-height: 44px; }
+  .forge-browse-grid.compact .browse-tile .entity-icon { width: 30px; height: 30px; }
+
+  /* Browse / ref tabs: comfortable thumbs */
+  .browse-tab, .ref-tab { padding: 8px 14px; min-height: 36px; }
+
+  /* Result column charts: shrink height, keep readable */
+  .res-chart-wrap { padding: 0; }
+  .res-chart { width: 100%; height: auto; max-height: 220px; }
+
+  /* Gantt label column shrinks but stays usable */
+  .gantt-row { grid-template-columns: 130px minmax(0, 1fr) auto; gap: 8px; }
+  .gantt-label { font-size: 12px; }
+  .gantt-info { display: none; }
+
+  /* Roster grid: 2 cols min, big enough to read */
+  .roster-grid { grid-template-columns: 1fr; gap: 10px; }
+  .roster-items { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
+
+  /* Quick-add chips: bigger, easier to tap */
+  .quick-chip { padding: 6px 12px 6px 6px; min-height: 32px; font-size: 12px; }
+
+  /* Priority chip strip wraps and uses more space per chip */
+  .forge-priority { gap: 8px; }
+  .priority-chip { padding: 4px 6px; min-height: 32px; }
+  .priority-arrow { padding: 4px 8px; min-width: 24px; min-height: 24px; }
+
+  /* Modals: full-width on phones, padded modestly */
+  .modal { width: min(560px, 94vw); padding: 18px; }
+  .modal-overlay { padding: 12px; }
+}
+
+@media (max-width: 600px) {
+  /* Disable the CRT scanline overlay on phones — it adds visual noise
+     to small screens without contributing the cinematic feel it has on
+     desktop. Keep the dark-blue gradient backdrop. */
+  body::before { display: none; }
+
+  /* Even tighter type on small phones. */
+  .site-header h1 { font-size: 18px; letter-spacing: 1.5px; }
+  .panel-head h2 { font-size: 14px; letter-spacing: 1.5px; }
+  .forge-section-divider { margin-left: -12px; margin-right: -12px; }
+  .container { padding: 0 12px; }
+
+  /* Hide the corner-triangle decorations on the column edges — they
+     read as clutter at small sizes. */
+  .forge-column::before,
+  .forge-column::after { display: none; }
+
+  /* The forge-add row stacks: search takes full width, then count+button,
+     then the secondary buttons wrap. */
+  .forge-add {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .forge-add .combo-search { flex: 1 1 100%; }
+  .forge-add input[type=number] { width: 64px; }
+  .forge-add #forge-add-btn { flex: 1 1 auto; min-width: 100px; }
+  .forge-add .ghost { flex: 1 1 auto; min-width: 0; padding: 7px 8px; font-size: 10px; }
+
+  /* Result card padding shrinks */
+  .result-card { padding: 12px; }
+  .cost-row { gap: 4px; }
+  .cost-pill { font-size: 10px; padding: 3px 8px; }
+  .time-big { font-size: 18px; }
+  .time-side { font-size: 13px; }
+
+  /* Path / step-detail tables become horizontally scrollable rather
+     than getting squeezed unreadably narrow. */
+  .path-section .path-table-wrap,
+  .path-section table {
+    overflow-x: auto;
+    display: block;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .path-table th, .path-table td { font-size: 11px; padding: 6px 8px; }
+
+  /* Producer-utilization rows: shorter for the smaller screen */
+  .prod-util-row { font-size: 11px; }
+
+  /* Insert popover: full width minus margin */
+  .forge-insert-popover {
+    width: calc(100vw - 16px);
+    max-height: 60vh;
+  }
+}
+
+/* Touch devices: hover-only affordances need a steady-state visible
+   alternative so users don't have to "discover" the + insert points. */
+@media (hover: none) {
+  .forge-insert::before { background: var(--border-soft); }
+  .forge-insert::after { opacity: 0.5; }
+  .forge-insert:active { background: rgba(78, 195, 255, 0.15); }
+}
+
+/* Mobile-only de-clutter: drop ambient labels that consume space
+   without driving an action. Live-status is reassuring on desktop but
+   purely informational, and the priority parenthetical is long. */
+@media (max-width: 800px) {
+  #forge-status { display: none; }
+  .forge-priority-hint { display: none; }
+}

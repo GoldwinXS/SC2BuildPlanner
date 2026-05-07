@@ -6,7 +6,7 @@
   'use strict';
 
   const state = {
-    mode: 'explorer',
+    mode: 'forge',
     realTime: false,
     chrono: false,
     explorerTarget: 'colossus',
@@ -23,6 +23,11 @@
     forgeResult: null,    // { timeline, log, warnings, eft }
     forgeRecent: { terran: [], protoss: [], zerg: [] }, // race -> [entityId,…] most recent first
     forgeBrowseTab: 'unit', // 'unit' | 'building' | 'addon' | 'upgrade'
+    forgePaletteCompact: false, // true = icon-only palette tiles
+    forgePaletteCollapsed: false, // true = palette grid hidden, list gets full column
+    explorerPickerRace: 'protoss',
+    explorerPickerType: 'unit',
+    scoutPickerType: 'unit',
     // Resource priority — when two steps could fire at the same instant
     // and contend for minerals/gas, the higher-tier class commits first.
     // Within a tier, gas-heavy actions get first dibs (gas is usually the
@@ -476,11 +481,75 @@
   // Rendering: Tech Explorer
   // ============================================================
 
+  // Shared icon-grid picker — used by Tech Explorer and Scout Translator.
+  // Renders tier-grouped browse-tiles into the given grid element, sets the
+  // currently-selected one, and wires clicks to onPick(id).
+  // tabContainer toggles active class on its [data-type] children.
+  function renderEntityPickerGrid(opts) {
+    const { gridEl, race, type, currentId, onPick, racesContainer, typesContainer } = opts;
+    if (!gridEl) return;
+    const list = Object.values(SC2_DATA.entities)
+      .filter(e => e.race === race && e.type === type && e.id !== 'larva');
+    list.sort((a, b) => {
+      const ta = tierOf(a.id), tb = tierOf(b.id);
+      if (ta !== tb) return ta - tb;
+      return a.name.localeCompare(b.name);
+    });
+    if (racesContainer) {
+      for (const tab of racesContainer.querySelectorAll('[data-race]')) {
+        tab.classList.toggle('active', tab.dataset.race === race);
+      }
+    }
+    if (typesContainer) {
+      for (const tab of typesContainer.querySelectorAll('[data-type]')) {
+        tab.classList.toggle('active', tab.dataset.type === type);
+      }
+    }
+    if (!list.length) {
+      gridEl.innerHTML = `<div class="forge-empty" style="grid-column: 1/-1;">No ${type}s for ${race}.</div>`;
+      return;
+    }
+    const parts = [];
+    let lastTier = null;
+    for (const e of list) {
+      const t = tierOf(e.id);
+      if (t !== lastTier) {
+        parts.push(`<div class="palette-tier-label">${TIER_LABELS[t] || ('Tier ' + t)}</div>`);
+        lastTier = t;
+      }
+      const cost = `${e.minerals || 0}m${e.gas ? '·' + e.gas + 'g' : ''}`;
+      const sel = e.id === currentId ? 'is-selected' : '';
+      parts.push(`<button type="button" class="browse-tile ${sel}" data-id="${e.id}" title="${e.name} — ${cost} · ${e.buildTime}s${e.note ? '\n' + e.note : ''}">
+        ${iconHtml(e, { size: 36 })}
+        <span class="tile-name">${e.name}</span>
+        <span class="tile-cost">${cost} · ${e.buildTime}s</span>
+      </button>`);
+    }
+    gridEl.innerHTML = parts.join('');
+    for (const tile of gridEl.querySelectorAll('.browse-tile')) {
+      tile.addEventListener('click', () => onPick(tile.dataset.id));
+    }
+  }
+
   function renderExplorer() {
     const select = document.getElementById('explorer-target');
     if (!select.options.length) populateEntityDropdown(select, { excludeStarting: true });
     select.value = state.explorerTarget;
     document.getElementById('explorer-opening').value = state.explorerOpening;
+
+    renderEntityPickerGrid({
+      gridEl: document.getElementById('explorer-grid'),
+      racesContainer: document.getElementById('explorer-race-tabs'),
+      typesContainer: document.getElementById('explorer-type-tabs'),
+      race: state.explorerPickerRace,
+      type: state.explorerPickerType,
+      currentId: state.explorerTarget,
+      onPick: (id) => {
+        state.explorerTarget = id;
+        state.explorerReference = '';
+        renderExplorer();
+      },
+    });
 
     const targetId = state.explorerTarget;
     const entity = SC2_DATA.entities[targetId];
@@ -606,6 +675,13 @@
     const minT = refOffset;
     const maxT = Math.max(eft || 0, ...timeline.map(t => t.end));
     const span = Math.max(maxT - minT, 1);
+    // Long builds compress badly inside a fixed-width container — when the
+    // total span is large, individual bars get so narrow that their text
+    // clips to "..." or partial characters. Give the Gantt a sensible
+    // minimum inner width (≈3px per game-second, floor 640) and let the
+    // outer wrapper scroll horizontally when needed. Same approach as the
+    // production-utilization chart so they read consistently.
+    const minWidthPx = Math.max(640, Math.round(maxT * 3));
     const rows = timeline.map(item => {
       const startAdj = item.start - refOffset;
       const endAdj = item.end - refOffset;
@@ -621,12 +697,24 @@
       const supplyTag = r ? ` · ${r.supply_used}/${r.supply_max} sup` : '';
       const resourceTag = r ? ` · ${Math.round(r.minerals)}m / ${Math.round(r.gas)}g` : '';
       const fullTitle = `${item.name} · ${fmtTime(startAdj)} → ${fmtTime(endAdj)} · ${durStr}${supplyTag}${resourceTag}`;
+      const ent = SC2_DATA.entities[item.id];
+      const iconMarkup = ent ? iconHtml(ent, { size: 18 }) : '';
+      // Bar text is suppressed when there isn't enough room for it. The
+      // approximate label width for "12s" / "1.4s" is ~22px; below that
+      // the text would clip mid-character, so we just hide it. The full
+      // duration is still in the info column on the right and the title
+      // tooltip on hover.
+      const approxBarPx = (widthPct / 100) * minWidthPx;
+      const showBarText = approxBarPx >= 22;
       return `
         <div class="gantt-row">
-          <div class="gantt-label" title="${item.name}">${item.name}</div>
+          <div class="gantt-label" title="${item.name}">
+            ${iconMarkup}
+            <span class="gantt-label-text">${item.name}</span>
+          </div>
           <div class="gantt-track">
             <div class="gantt-bar ${cls}" style="left:${startPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%" title="${fullTitle}">
-              <span class="bar-text">${durStr}</span>
+              ${showBarText ? `<span class="bar-text">${durStr}</span>` : ''}
             </div>
           </div>
           <div class="gantt-info">
@@ -639,7 +727,11 @@
         </div>
       `;
     }).join('');
-    return `<div class="gantt">${rows}</div>`;
+    return `
+      <div class="gantt-scroll">
+        <div class="gantt" style="min-width:${minWidthPx}px">${rows}</div>
+      </div>
+    `;
   }
 
   function renderSimLog(log, refOffset) {
@@ -719,17 +811,77 @@
       || entity.name.toLowerCase().replace(/[\s\-]+/g, '');
   }
 
+  // Entries whose primary local file is missing or wrong-content. We
+  // bypass the local file and use a curated fallback chain — typically
+  // the producer-building's icon, or an inline themed SVG. External
+  // CDNs aren't reliable for these specific items, so we prefer
+  // in-repo assets that we can verify exist.
+  const SKIP_LOCAL_ICON = new Set([
+    'orbital_command',
+    'sensor_tower',
+    'factory_techlab',
+    'factory_reactor',
+    'starport_techlab',
+    'starport_reactor',
+  ]);
+
+  // Themed inline-SVG placeholder for sensor_tower — drawn in the same
+  // cyan accent palette so it doesn't look out of place. No network
+  // round-trip; encoded as a data URI. No '|' characters in the URI so
+  // the pipe-separated fallback chain in ICON_ONERROR stays intact.
+  const SENSOR_TOWER_SVG =
+    "data:image/svg+xml;utf8," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">' +
+      '<rect width="32" height="32" fill="#0a121d"/>' +
+      '<path d="M16 6 L20 22 L12 22 Z" fill="none" stroke="#4ec3ff" stroke-width="1.5"/>' +
+      '<path d="M16 22 L16 26" stroke="#4ec3ff" stroke-width="1.5"/>' +
+      '<path d="M10 26 L22 26" stroke="#4ec3ff" stroke-width="1.5"/>' +
+      '<path d="M16 4 A8 8 0 0 1 24 12" fill="none" stroke="#4ec3ff" stroke-width="1" opacity="0.6"/>' +
+      '<path d="M16 2 A12 12 0 0 1 28 14" fill="none" stroke="#4ec3ff" stroke-width="1" opacity="0.4"/>' +
+      '<circle cx="16" cy="14" r="1.5" fill="#4ec3ff"/>' +
+      '</svg>'
+    );
+
+  // Curated fallback URL list per-entity. Producer-icon substitutes are
+  // visually truthful — a Factory Techlab is "an addon on a Factory" —
+  // and avoid showing the wrong building (Barracks) that the original
+  // local files do. Variants get a corner badge (see ENTITY_BADGES) so
+  // the user can tell them apart from the producer at a glance.
+  const ICON_FALLBACK_CHAIN = {
+    orbital_command: ['icons/command_center.png'],
+    sensor_tower: [SENSOR_TOWER_SVG],
+    factory_techlab: ['icons/factory.png'],
+    factory_reactor: ['icons/factory.png'],
+    starport_techlab: ['icons/starport.png'],
+    starport_reactor: ['icons/starport.png'],
+  };
+
+  // Variant-disambiguation badges. Drawn as a small colored pill in the
+  // bottom-right of the icon so two entities sharing the same base image
+  // are still distinguishable at a glance.
+  const ENTITY_BADGES = {
+    orbital_command:  { text: 'OC',  color: '#ffc84a' },
+    factory_techlab:  { text: 'TL',  color: '#4ec3ff' },
+    factory_reactor:  { text: 'R',   color: '#4ade80' },
+    starport_techlab: { text: 'TL',  color: '#4ec3ff' },
+    starport_reactor: { text: 'R',   color: '#4ade80' },
+  };
+
   function iconUrls(entity) {
     if (entity.icon) return [entity.icon];
-    // 1. Bundled local file — see icons/ folder; named by entity ID.
-    //    Most entities have one; the few that don't will 404 here and fall through.
-    const urls = [`icons/${entity.id}.png`];
-    // 2. jsDelivr-mirrored ap_sc2_icons — covers most units/buildings/addons.
+    const urls = [];
+    if (SKIP_LOCAL_ICON.has(entity.id)) {
+      const fb = ICON_FALLBACK_CHAIN[entity.id];
+      if (fb) urls.push(...fb);
+    } else {
+      urls.push(`icons/${entity.id}.png`);
+    }
+    // jsDelivr-mirrored ap_sc2_icons — covers most units/buildings/addons.
     if (entity.race && (entity.type === 'unit' || entity.type === 'building' || entity.type === 'addon')) {
       const kind = entity.type === 'unit' ? 'unit' : 'building';
       urls.push(`https://cdn.jsdelivr.net/gh/MatthewMarinets/ap_sc2_icons@main/icons/blizzard/btn-${kind}-${entity.race}-${iconSlug(entity)}.png`);
     }
-    // 3. Liquipedia FilePath — last resort. No ?width=: that hop returns 403.
+    // Liquipedia FilePath — last resort.
     const lpName = encodeURIComponent(entity.name.replace(/\s+/g, '_'));
     urls.push(`https://liquipedia.net/starcraft2/Special:FilePath/${lpName}.png`);
     return urls;
@@ -747,10 +899,18 @@
     const fallback = `<span class="icon-fallback type-${entity.type}">${glyph}</span>`;
     const first = urls[0] || '';
     const rest = urls.slice(1).join('|');
+    // Optional variant badge (e.g., "OC" on a Command Center icon for
+    // orbital_command). Only attached for entities listed in
+    // ENTITY_BADGES; everyone else gets the normal icon.
+    const badge = ENTITY_BADGES[entity.id];
+    const badgeHtml = badge
+      ? `<span class="entity-icon-badge" style="background:${badge.color}">${badge.text}</span>`
+      : '';
     return `<span class="${cls}" style="width:${size}px;height:${size}px;">
       <img class="ent-img" src="${first}" alt="" loading="lazy"
         data-fb="${rest}" onerror="${ICON_ONERROR}" />
       ${fallback}
+      ${badgeHtml}
     </span>`;
   }
 
@@ -861,6 +1021,8 @@
         buildOrder: state.forgeOrder,
         recent: state.forgeRecent,
         priority: state.forgePriority,
+        paletteCompact: state.forgePaletteCompact,
+        paletteCollapsed: state.forgePaletteCollapsed,
         savedAt: Date.now(),
       }));
     } catch (_) { /* quota/private mode — ignore */ }
@@ -876,6 +1038,54 @@
     for (const v of PRIORITY_TIERS) if (!seen.has(v)) out.push(v);
     return out;
   }
+  // ============================================================
+  // Collapsible-section persistence — any panel with a data-section-id
+  // can be remembered as collapsed/expanded across reloads. Used by the
+  // result column's chart/Gantt/roster blocks.
+  // ============================================================
+  const UI_COLLAPSE_KEY = 'sc2-timings.ui.collapsed.v1';
+  function loadCollapseState() {
+    try {
+      const raw = localStorage.getItem(UI_COLLAPSE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) { return {}; }
+  }
+  function saveCollapseState(s) {
+    try { localStorage.setItem(UI_COLLAPSE_KEY, JSON.stringify(s)); } catch (_) {}
+  }
+  function toggleSectionCollapsed(id) {
+    const s = loadCollapseState();
+    s[id] = !s[id];
+    saveCollapseState(s);
+    return s[id];
+  }
+  function applyStoredCollapseStates(root) {
+    const s = loadCollapseState();
+    const scope = root || document;
+    for (const el of scope.querySelectorAll('.collapsible-section[data-section-id]')) {
+      const id = el.dataset.sectionId;
+      if (s[id]) el.dataset.collapsed = 'true';
+      else el.dataset.collapsed = 'false';
+    }
+  }
+
+  // First-load only: if the Forge has never been persisted, drop in a
+  // recognizable preset so the page has something to look at. The instant
+  // the user touches anything, scheduleForgeRun → persistForge writes
+  // FORGE_STORAGE_KEY, so this never re-fires and saved work is preserved.
+  // Clearing the build also writes the key (with an empty array), so a
+  // deliberate empty state stays empty across reloads.
+  const FORGE_DEFAULT = { race: 'protoss', preset: '1-Gate Robo Colossus' };
+  function seedDefaultBuildIfFirstLoad() {
+    if (localStorage.getItem(FORGE_STORAGE_KEY) != null) return false;
+    const preset = (FORGE_PRESETS[FORGE_DEFAULT.race] || {})[FORGE_DEFAULT.preset];
+    if (!preset) return false;
+    state.forgeRace = FORGE_DEFAULT.race;
+    state.forgeOrder = JSON.parse(JSON.stringify(preset));
+    state.forgePriority = sanitizePriority(state.forgePriority);
+    return true;
+  }
+
   function restoreForge() {
     try {
       const raw = localStorage.getItem(FORGE_STORAGE_KEY);
@@ -897,6 +1107,12 @@
       state.forgeRace = data.race;
       state.forgeOrder = cleaned;
       state.forgePriority = sanitizePriority(data.priority);
+      if (typeof data.paletteCompact === 'boolean') {
+        state.forgePaletteCompact = data.paletteCompact;
+      }
+      if (typeof data.paletteCollapsed === 'boolean') {
+        state.forgePaletteCollapsed = data.paletteCollapsed;
+      }
       // Restore recent items per race (filter unknowns and clamp length)
       if (data.recent && typeof data.recent === 'object') {
         for (const race of ['terran', 'protoss', 'zerg']) {
@@ -1234,6 +1450,532 @@
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // ============================================================
+  // SALT encoding (spawningtool / Veritasimo's SALT.cs)
+  // ============================================================
+  // Format: $version + "title|author|desc|" + "~" + repeated 5-char step.
+  // Each step char is an index into SALT_CHARSET.
+  //   step[0] = supply, step[1] = minute, step[2] = second,
+  //   step[3] = type (0=Structure, 1=Unit, 2=Morph, 3=Upgrade),
+  //   step[4] = item code (per-type lookup table).
+  // We use version 4 (matches strings produced by spawningtool.com).
+  const SALT_CHARSET =
+    " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+  const SALT_VERSION = 4;
+  const SALT_TYPE = { STRUCTURE: 0, UNIT: 1, MORPH: 2, UPGRADE: 3 };
+
+  // entity_id -> [salt_type, salt_code]
+  // Anything not in this table is unrepresentable in SALT and gets skipped
+  // on export with a warning. Newer entities (Disruptor, Adept, Liberator
+  // etc.) ARE here because spawningtool added codes for them in later
+  // SALT.cs revisions.
+  const SALT_ID_TO_CODE = {
+    // ---- Terran structures ----
+    armory: [0, 0], barracks: [0, 1], bunker: [0, 2], command_center: [0, 3],
+    engineering_bay: [0, 4], factory: [0, 5], fusion_core: [0, 6], ghost_academy: [0, 7],
+    missile_turret: [0, 8], barracks_reactor: [0, 9], factory_reactor: [0, 10],
+    starport_reactor: [0, 11], refinery: [0, 12], sensor_tower: [0, 13],
+    starport: [0, 14], supply_depot: [0, 15], barracks_techlab: [0, 16],
+    factory_techlab: [0, 17], starport_techlab: [0, 18],
+    // ---- Protoss structures ----
+    assimilator: [0, 19], cybernetics_core: [0, 20], dark_shrine: [0, 21],
+    fleet_beacon: [0, 22], forge: [0, 23], gateway: [0, 24], nexus: [0, 25],
+    photon_cannon: [0, 26], pylon: [0, 27], robotics_bay: [0, 28],
+    robotics_facility: [0, 29], stargate: [0, 30], templar_archives: [0, 31],
+    twilight_council: [0, 32],
+    // ---- Zerg structures ----
+    baneling_nest: [0, 33], evolution_chamber: [0, 34], extractor: [0, 35],
+    hatchery: [0, 36], hydralisk_den: [0, 37], infestation_pit: [0, 38],
+    nydus_network: [0, 39], roach_warren: [0, 40], spawning_pool: [0, 41],
+    spine_crawler: [0, 42], spire: [0, 43], spore_crawler: [0, 44],
+    ultralisk_cavern: [0, 45],
+
+    // ---- Terran units ----
+    banshee: [1, 0], battlecruiser: [1, 1], ghost: [1, 2], hellion: [1, 3],
+    marauder: [1, 4], marine: [1, 5], medivac: [1, 6], raven: [1, 7],
+    reaper: [1, 8], scv: [1, 9], siege_tank: [1, 10], thor: [1, 11],
+    viking: [1, 12], hellbat: [1, 40], widow_mine: [1, 42], cyclone: [1, 48],
+    liberator: [1, 49],
+    // ---- Protoss units ----
+    carrier: [1, 14], colossus: [1, 15], dark_templar: [1, 16],
+    high_templar: [1, 17], immortal: [1, 18], mothership: [1, 19],
+    observer: [1, 20], phoenix: [1, 21], probe: [1, 22], sentry: [1, 23],
+    stalker: [1, 24], void_ray: [1, 25], zealot: [1, 26], warp_prism: [1, 39],
+    oracle: [1, 44], tempest: [1, 45], disruptor: [1, 50], adept: [1, 51],
+    // ---- Zerg units ----
+    corruptor: [1, 27], drone: [1, 28], hydralisk: [1, 29], mutalisk: [1, 30],
+    overlord: [1, 31], queen: [1, 32], roach: [1, 33], ultralisk: [1, 34],
+    zergling: [1, 35], infestor: [1, 38], swarm_host: [1, 46], viper: [1, 47],
+
+    // ---- Morphs (building/unit upgrades) ----
+    orbital_command: [2, 0], planetary_fortress: [2, 1],
+    lair: [2, 3], hive: [2, 4], greater_spire: [2, 5],
+    brood_lord: [2, 6], baneling: [2, 7], overseer: [2, 8],
+    ravager: [2, 9], lurker: [2, 10], lurker_den: [2, 12], archon: [2, 13],
+
+    // ---- Upgrades ----
+    // Multi-level upgrades collapse to their level-1 SALT slot; level 2/3
+    // are imported back as +1 (data loss is unavoidable in SALT v4).
+    inf_armor_1: [3, 1], inf_armor_2: [3, 1], inf_armor_3: [3, 1],
+    inf_weapons_1: [3, 2], inf_weapons_2: [3, 2], inf_weapons_3: [3, 2],
+    cloaking_field: [3, 8], personal_cloaking: [3, 9],
+    stimpack: [3, 11], concussive_shells: [3, 15], combat_shield: [3, 16],
+    weapon_refit: [3, 52], caduceus_reactor: [3, 54],
+    smart_servos: [3, 57], drilling_claws: [3, 66],
+    p_ground_armor_1: [3, 18], p_ground_weapons_1: [3, 19],
+    p_ground_weapons_2: [3, 19], p_ground_weapons_3: [3, 19],
+    p_air_armor_1: [3, 20], p_air_weapons_1: [3, 21], p_shields_1: [3, 22],
+    hallucination: [3, 23], psionic_storm: [3, 24], blink: [3, 25],
+    warpgate_research: [3, 26], charge: [3, 27],
+    extended_thermal_lance: [3, 47], graviton_catapult: [3, 58],
+    gravitic_boosters: [3, 59], gravitic_drive: [3, 60],
+    anion_pulse_crystals: [3, 67], resonating_glaives: [3, 73],
+    z_carapace_1: [3, 28], z_melee_1: [3, 29], z_missile_1: [3, 32],
+    grooved_spines: [3, 33], pneumatized_carapace: [3, 34],
+    glial_reconstitution: [3, 36], tunneling_claws: [3, 38],
+    chitinous_plating: [3, 40], adrenal_glands: [3, 41], metabolic_boost: [3, 42],
+    burrow: [3, 44], centrifugal_hooks: [3, 45], neural_parasite: [3, 49],
+    muscular_augments: [3, 65], seismic_spines: [3, 69],
+  };
+
+  // Inverse lookup: "type:code" -> entity_id (first id wins for upgrades
+  // that share a code, preferring the +1 variant).
+  const SALT_CODE_TO_ID = (() => {
+    const m = {};
+    for (const [id, [t, c]] of Object.entries(SALT_ID_TO_CODE)) {
+      const key = `${t}:${c}`;
+      if (!(key in m)) m[key] = id;
+    }
+    return m;
+  })();
+
+  function saltChar(idx) {
+    const i = Math.max(0, Math.min(SALT_CHARSET.length - 1, idx | 0));
+    return SALT_CHARSET[i];
+  }
+  function saltIndex(ch) {
+    const i = SALT_CHARSET.indexOf(ch);
+    return i < 0 ? 0 : i;
+  }
+
+  // Encode timeline → SALT string. Uses the standard SC2 build-order
+  // convention: time and supply are taken at CLICK time (when the action
+  // is queued), not completion. So `13 Rax` means you clicked Rax at
+  // supply 13 — same convention spawningtool builds use. `name` becomes
+  // the build's title.
+  function encodeSALT(timeline, name) {
+    const steps = [];
+    const skipped = [];
+    for (const t of timeline) {
+      // Swaps and other synthetic events have no SALT representation.
+      if (!t || !t.id || String(t.id).startsWith('swap_')) continue;
+      const map = SALT_ID_TO_CODE[t.id];
+      if (!map) {
+        skipped.push(t.name || t.id);
+        continue;
+      }
+      const [type, code] = map;
+      const sup = t.resBefore ? Math.round(t.resBefore.supply_used || 0) : 0;
+      const startSec = Math.max(0, Math.round(t.start || 0));
+      const minute = Math.floor(startSec / 60);
+      const second = startSec % 60;
+      steps.push(saltChar(sup) + saltChar(minute) + saltChar(second) + saltChar(type) + saltChar(code));
+    }
+    const title = (name || 'sc2-timings build').replace(/[|~]/g, ' ');
+    const header = saltChar(SALT_VERSION) + `${title}|sc2-timings||~`;
+    return { encoded: header + steps.join(''), skipped };
+  }
+
+  // Decode a SALT string into { name, race, buildOrder, skipped }.
+  // Race is inferred from the first step that resolves to a race-tagged
+  // entity. Throws on malformed input.
+  function decodeSALT(input) {
+    if (typeof input !== 'string') throw new Error('SALT input must be a string');
+    const s = input.trim();
+    if (!s.length) throw new Error('SALT input is empty');
+    const tildeIdx = s.indexOf('~');
+    if (tildeIdx < 1) throw new Error('SALT header missing "~" terminator');
+    // s[0] is the version char; s[1..tildeIdx-1] is the meta block.
+    const meta = s.slice(1, tildeIdx).split('|');
+    const name = (meta[0] || '').trim() || 'Imported SALT build';
+    const body = s.slice(tildeIdx + 1);
+    if (body.length % 5 !== 0) {
+      throw new Error(`SALT body length ${body.length} is not a multiple of 5`);
+    }
+    const buildOrder = [];
+    let race = null;
+    let skipped = 0;
+    for (let i = 0; i < body.length; i += 5) {
+      const sup = saltIndex(body[i]);
+      const min = saltIndex(body[i + 1]);
+      const sec = saltIndex(body[i + 2]);
+      const type = saltIndex(body[i + 3]);
+      const code = saltIndex(body[i + 4]);
+      const id = SALT_CODE_TO_ID[`${type}:${code}`];
+      if (!id) { skipped++; continue; }
+      const entity = SC2_DATA.entities[id];
+      if (!entity) { skipped++; continue; }
+      if (!race) race = entity.race;
+      // Suppress meaningless 0-supply/0-time padding entries that sometimes
+      // appear at the end of a SALT string.
+      if (sup === 0 && min === 0 && sec === 0 && i > 0 && type === 0 && code === 0) continue;
+      buildOrder.push({ entityId: id, repeat: 1 });
+    }
+    if (!race) race = 'terran';
+    return { name, race, buildOrder, skipped };
+  }
+
+  // ============================================================
+  // Plain-text build-order formatter
+  // ============================================================
+  // Produces a human-readable list with optional filters. We walk the
+  // simulator's *timeline* (sorted by start time, ties by end time) so
+  // output is in strict chronological order — that may differ from the
+  // user's editor order under resource priority.
+  //
+  // Time semantics: each row's first time is the START time (when the
+  // player clicks). For things where the FINISH time matters to a reader
+  // (buildings come online; addons attach; upgrades grant their effect),
+  // we also append "→ finish" so the export is unambiguous. Units only
+  // show the start time — the SC2 build-order convention.
+  //   options: { omitWorkers, omitArmy, simplify, includeSupply, includeTime }
+  function formatBuildOrderText(buildOrder, race, timeline, options = {}) {
+    const opts = {
+      omitWorkers: false, omitArmy: false, simplify: false,
+      includeSupply: true, includeTime: true,
+      ...options,
+    };
+    // Things where the finish time matters to a reader (the action's
+    // effect is at the END, not the START).
+    const showsFinish = e => e && (e.type === 'building' || e.type === 'addon' || e.type === 'upgrade');
+
+    // Normalize: timeline entries that begin "swap_<from>_to_<to>" are
+    // pseudo-events; turn them into a friendly label and keep them in
+    // their chronological slot.
+    const events = (timeline || []).slice().sort((a, b) => (a.start - b.start) || (a.end - b.end));
+    const rows = [];
+    let i = 0;
+    while (i < events.length) {
+      const t = events[i];
+      const id = t.id;
+      // --- swap row (always show start → finish; the swap "completes"
+      // when the addon lands on the new building) ---
+      if (typeof id === 'string' && id.startsWith('swap_')) {
+        const m = id.match(/^swap_(.+)_to_(.+)$/);
+        const fromN = m ? (SC2_DATA.entities[m[1]]?.name || m[1]) : id;
+        const toN = m ? (SC2_DATA.entities[m[2]]?.name || m[2]) : '';
+        const time = opts.includeTime ? `${fmtTime(t.start)} → ${fmtTime(t.end)}` : null;
+        rows.push({ supply: '', time, action: `Swap addon: ${fromN} → ${toN}` });
+        i++; continue;
+      }
+      const e = SC2_DATA.entities[id];
+      if (!e) { i++; continue; }
+      const isWorker = e.role === 'worker';
+      const isArmy = e.type === 'unit' && !isWorker;
+      if (opts.omitWorkers && isWorker) { i++; continue; }
+      if (opts.omitArmy && isArmy) { i++; continue; }
+
+      // --- simplify: collapse 3+ consecutive identical unit-production
+      // events (workers OR army) into one "Continuously produce …" line.
+      // Filtered-out events are skipped as we walk so a run of marines
+      // separated by an omitted scv still collapses cleanly. ---
+      if (opts.simplify && (isArmy || isWorker)) {
+        let runEnd = i;
+        let count = 1;
+        let lastTime = t.end;
+        for (let j = i + 1; j < events.length; j++) {
+          const tj = events[j];
+          // Skip events that the current filters drop entirely.
+          const ej = SC2_DATA.entities[tj.id];
+          if (!ej) break;
+          const ejWorker = ej.role === 'worker';
+          const ejArmy = ej.type === 'unit' && !ejWorker;
+          if ((opts.omitWorkers && ejWorker) || (opts.omitArmy && ejArmy)) continue;
+          if (tj.id !== id) break;
+          runEnd = j;
+          count++;
+          lastTime = tj.end;
+        }
+        if (count >= 3) {
+          const time = opts.includeTime ? fmtTime(t.start) : null;
+          const sup = (opts.includeSupply && t.resBefore) ? Math.round(t.resBefore.supply_used) : '';
+          const endLabel = opts.includeTime ? ` until ${fmtTime(lastTime)}` : '';
+          rows.push({
+            supply: sup,
+            time,
+            action: `Continuously produce ${e.name} (×${count})${endLabel}`,
+          });
+          i = runEnd + 1;
+          continue;
+        }
+      }
+
+      // For buildings/addons/upgrades, append the finish time so a reader
+      // can tell at a glance when the effect is online. Units stay
+      // start-only — that's the SC2 build-order convention.
+      const time = opts.includeTime
+        ? (showsFinish(e) ? `${fmtTime(t.start)} → ${fmtTime(t.end)}` : fmtTime(t.start))
+        : null;
+      const sup = (opts.includeSupply && t.resBefore) ? Math.round(t.resBefore.supply_used) : '';
+      const tag = e.type === 'upgrade' ? ' (research)' : '';
+      rows.push({ supply: sup, time, action: `${e.name}${tag}` });
+      i++;
+    }
+
+    // --- failed steps: anything in the user's build order that has no
+    // corresponding timeline entry (couldn't fire) gets appended at the
+    // bottom under a "Did not fire:" header so the user can see what was
+    // skipped.
+    const stepResults = mapStepsToTimeline(buildOrder || [], events);
+    const failed = [];
+    for (let k = 0; k < (buildOrder || []).length; k++) {
+      const step = buildOrder[k];
+      if (step.kind === 'priority') continue; // never appears in timeline
+      if (stepResults[k]) continue;
+      if (step.kind === 'swap') {
+        const fromN = SC2_DATA.entities[step.from]?.name || step.from;
+        const toN = SC2_DATA.entities[step.to]?.name || step.to;
+        failed.push(`Swap addon: ${fromN} → ${toN}`);
+      } else if (step.entityId) {
+        const ent = SC2_DATA.entities[step.entityId];
+        const isW = ent?.role === 'worker';
+        const isA = ent?.type === 'unit' && !isW;
+        if (opts.omitWorkers && isW) continue;
+        if (opts.omitArmy && isA) continue;
+        const repeat = step.repeat || 1;
+        failed.push(`${ent?.name || step.entityId}${repeat > 1 ? ' ×' + repeat : ''}`);
+      }
+    }
+
+    const header = [];
+    const racePretty = race ? race[0].toUpperCase() + race.slice(1) : '';
+    if (racePretty) header.push(`Race: ${racePretty}`);
+    const filters = [];
+    if (opts.omitWorkers) filters.push('workers omitted');
+    if (opts.omitArmy) filters.push('army omitted');
+    if (opts.simplify) filters.push('simplified');
+    if (filters.length) header.push(`(${filters.join(', ')})`);
+    const headerParts = [];
+    if (header.length) headerParts.push(header.join(' '));
+    if (opts.includeTime) {
+      headerParts.push('Times are GAME seconds (Faster speed). For units: time = when production starts. For buildings/upgrades: start → finish.');
+    }
+    const headerLine = headerParts.length ? headerParts.join('\n') + '\n' : '';
+    const failedBlock = failed.length
+      ? `\n\nDid not fire (resource/tech-blocked):\n  - ${failed.join('\n  - ')}`
+      : '';
+    // Dynamic column widths so "0:00" and "0:00 → 1:30" align in the
+    // same column.
+    const supplyW = opts.includeSupply
+      ? Math.max(3, ...rows.map(r => String(r.supply ?? '').length))
+      : 0;
+    const timeW = opts.includeTime
+      ? Math.max(5, ...rows.map(r => String(r.time ?? '').length))
+      : 0;
+    const lines = rows.map(r => {
+      const cols = [];
+      if (opts.includeSupply) cols.push(String(r.supply ?? '').padStart(supplyW, ' '));
+      if (opts.includeTime) cols.push(String(r.time ?? '').padStart(timeW, ' '));
+      cols.push(r.action);
+      return cols.join('  ');
+    });
+    return headerLine + lines.join('\n') + failedBlock;
+  }
+
+  // ============================================================
+  // Share / Export modal
+  // ============================================================
+  function openShareModal() {
+    const existing = document.getElementById('forge-share-overlay');
+    if (existing) existing.remove();
+    if (!state.forgeOrder.length) {
+      alert('Build is empty — add steps first.');
+      return;
+    }
+    // Always re-run the simulator so the export reflects the current
+    // build, even if a debounced edit hasn't fired yet. runForge() is
+    // synchronous and updates state.forgeResult.
+    runForge();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'forge-share-overlay';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal modal-wide share-modal">
+        <div class="library-head">
+          <div>
+            <h4>Share build order</h4>
+            <p class="library-sub">Copy as plain text, export to SALT (spawningtool format), or paste a SALT string to import.</p>
+          </div>
+          <button type="button" class="ghost icon-btn" data-act="close" title="Close">✕</button>
+        </div>
+
+        <div class="share-tabs" role="tablist">
+          <button type="button" class="share-tab active" data-tab="text">📋 Copy text</button>
+          <button type="button" class="share-tab" data-tab="salt">🧂 SALT</button>
+        </div>
+
+        <!-- ----- Text tab ----- -->
+        <div class="share-pane share-pane-text active" data-pane="text">
+          <div class="share-options">
+            <label class="toggle"><input type="checkbox" id="share-omit-workers" /><span>Omit workers</span></label>
+            <label class="toggle"><input type="checkbox" id="share-omit-army" /><span>Omit army</span></label>
+            <label class="toggle"><input type="checkbox" id="share-simplify" /><span>Simplify (collapse repeats into "continuously produce …")</span></label>
+            <label class="toggle"><input type="checkbox" id="share-include-supply" checked /><span>Include supply</span></label>
+            <label class="toggle"><input type="checkbox" id="share-include-time" checked /><span>Include time</span></label>
+          </div>
+          <textarea id="share-text-out" class="share-textarea share-textarea-tall" readonly rows="22"></textarea>
+          <div class="share-actions">
+            <span class="share-skipped" id="share-text-skipped"></span>
+            <button type="button" class="ghost" data-act="copy-text">📋 Copy to clipboard</button>
+          </div>
+        </div>
+
+        <!-- ----- SALT tab ----- -->
+        <div class="share-pane share-pane-salt" data-pane="salt">
+          <div class="share-section">
+            <div class="share-section-head">Export this build as SALT</div>
+            <textarea id="share-salt-out" class="share-textarea share-mono" readonly rows="3"></textarea>
+            <div class="share-actions">
+              <span class="share-skipped" id="share-salt-skipped"></span>
+              <button type="button" class="ghost" data-act="copy-salt">📋 Copy SALT</button>
+            </div>
+          </div>
+          <div class="share-section">
+            <div class="share-section-head">Import a SALT string</div>
+            <textarea id="share-salt-in" class="share-textarea share-mono" placeholder="Paste a SALT string, e.g. $201006|spawningtool.com||~* 0 /, H !, …" rows="3"></textarea>
+            <div class="share-actions">
+              <span class="share-skipped" id="share-salt-import-msg"></span>
+              <button type="button" class="ghost" data-act="import-salt-library">Save to library</button>
+              <button type="button" data-act="import-salt-forge">Open in Forge</button>
+            </div>
+          </div>
+          <p class="share-foot">SALT v4 has no slot for some modern entities (Disruptor add-on patches, multi-level upgrade tiers, etc.). Unmappable steps are listed below the export.</p>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Tab switching
+    overlay.querySelectorAll('.share-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        overlay.querySelectorAll('.share-tab').forEach(b => b.classList.toggle('active', b === btn));
+        overlay.querySelectorAll('.share-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === btn.dataset.tab));
+      });
+    });
+
+    // Generic close
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector('[data-act="close"]').addEventListener('click', () => overlay.remove());
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        overlay.remove();
+        document.removeEventListener('keydown', onKey);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+
+    // ----- Text tab live preview -----
+    const textOut = overlay.querySelector('#share-text-out');
+    const textSkip = overlay.querySelector('#share-text-skipped');
+    const refreshText = () => {
+      const opts = {
+        omitWorkers: overlay.querySelector('#share-omit-workers').checked,
+        omitArmy: overlay.querySelector('#share-omit-army').checked,
+        simplify: overlay.querySelector('#share-simplify').checked,
+        includeSupply: overlay.querySelector('#share-include-supply').checked,
+        includeTime: overlay.querySelector('#share-include-time').checked,
+      };
+      const text = formatBuildOrderText(
+        state.forgeOrder, state.forgeRace, state.forgeResult?.timeline || [], opts
+      );
+      textOut.value = text;
+      // Show row count so it's obvious nothing is truncated, even when
+      // the textarea has to scroll internally.
+      const lines = text.split('\n').filter(l => l.length).length;
+      const tlEvents = (state.forgeResult?.timeline || []).filter(t => !(typeof t.id === 'string' && t.id.startsWith('swap_'))).length;
+      textSkip.textContent = `${lines} line${lines === 1 ? '' : 's'} · ${tlEvents} timeline event${tlEvents === 1 ? '' : 's'} from sim`;
+    };
+    overlay.querySelectorAll('.share-options input').forEach(el => {
+      el.addEventListener('change', refreshText);
+    });
+    refreshText();
+
+    overlay.querySelector('[data-act="copy-text"]').addEventListener('click', async (ev) => {
+      await copyAndFlash(textOut.value, ev.currentTarget);
+    });
+
+    // ----- SALT tab -----
+    const saltOut = overlay.querySelector('#share-salt-out');
+    const saltSkip = overlay.querySelector('#share-salt-skipped');
+    const result = encodeSALT(
+      state.forgeResult?.timeline || [],
+      `sc2-timings ${state.forgeRace} build`
+    );
+    saltOut.value = result.encoded;
+    if (result.skipped.length) {
+      const u = [...new Set(result.skipped)];
+      saltSkip.textContent = `Skipped (no SALT slot): ${u.slice(0, 6).join(', ')}${u.length > 6 ? ` +${u.length - 6} more` : ''}`;
+    }
+    overlay.querySelector('[data-act="copy-salt"]').addEventListener('click', async (ev) => {
+      await copyAndFlash(saltOut.value, ev.currentTarget);
+    });
+
+    const saltIn = overlay.querySelector('#share-salt-in');
+    const saltImportMsg = overlay.querySelector('#share-salt-import-msg');
+    const tryImport = (mode) => {
+      const raw = (saltIn.value || '').trim();
+      if (!raw) { saltImportMsg.textContent = 'Paste a SALT string first.'; return; }
+      try {
+        const decoded = decodeSALT(raw);
+        if (!decoded.buildOrder.length) {
+          saltImportMsg.textContent = 'Decoded 0 steps — none of the codes were recognized.';
+          return;
+        }
+        const skipMsg = decoded.skipped ? ` (${decoded.skipped} step${decoded.skipped === 1 ? '' : 's'} skipped)` : '';
+        if (mode === 'forge') {
+          if (state.forgeOrder.length && !confirm('Replace the current Forge build?')) return;
+          applyBuildToForge({ race: decoded.race, buildOrder: decoded.buildOrder, priority: null });
+          overlay.remove();
+        } else {
+          saveBuildToLibrary({
+            name: decoded.name,
+            race: decoded.race,
+            buildOrder: decoded.buildOrder,
+            priority: null,
+            source: 'import',
+          });
+          saltImportMsg.textContent = `Saved "${decoded.name}" to library — ${decoded.buildOrder.length} step${decoded.buildOrder.length === 1 ? '' : 's'}${skipMsg}.`;
+        }
+      } catch (err) {
+        saltImportMsg.textContent = `Couldn't decode: ${err.message}`;
+      }
+    };
+    overlay.querySelector('[data-act="import-salt-forge"]').addEventListener('click', () => tryImport('forge'));
+    overlay.querySelector('[data-act="import-salt-library"]').addEventListener('click', () => tryImport('library'));
+  }
+
+  async function copyAndFlash(text, btn) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {
+      // Fallback for older browsers / insecure contexts: select + execCommand
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (_) { /* give up */ }
+      ta.remove();
+    }
+    if (btn) {
+      const original = btn.textContent;
+      btn.textContent = 'Copied ✓';
+      btn.disabled = true;
+      setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1100);
+    }
   }
 
   // Replay-import picker — shown after parsing a .SC2Replay. Lets the user
@@ -1728,18 +2470,53 @@
     }
   }
 
+  // Tier of an entity = depth of its prerequisite chain. T1 = no prereqs,
+  // T2 = needs T1, etc. Cached because computed on every browse render.
+  // Used to group palette items by tech depth instead of alphabetical —
+  // a Stalker sits with its Cyber Core friends, Colossus with Robo Bay.
+  const TIER_CACHE = new Map();
+  function tierOf(id, seen = new Set()) {
+    if (TIER_CACHE.has(id)) return TIER_CACHE.get(id);
+    if (seen.has(id)) return 1;
+    const e = SC2_DATA.entities[id];
+    if (!e) return 1;
+    const prereqs = (e.prerequisites || []).filter(p => p !== id);
+    if (!prereqs.length) {
+      TIER_CACHE.set(id, 1);
+      return 1;
+    }
+    seen.add(id);
+    let max = 0;
+    for (const p of prereqs) max = Math.max(max, tierOf(p, seen));
+    seen.delete(id);
+    const t = max + 1;
+    TIER_CACHE.set(id, t);
+    return t;
+  }
+  const TIER_LABELS = {
+    1: 'Tier 1 — base & openers',
+    2: 'Tier 2 — first tech',
+    3: 'Tier 3 — mid game',
+    4: 'Tier 4 — advanced',
+    5: 'Tier 5 — endgame',
+    6: 'Tier 6+',
+  };
+
   function renderForgeBrowse() {
     const grid = document.getElementById('forge-browse-grid');
     if (!grid) return;
     const race = state.forgeRace;
     const tab = state.forgeBrowseTab;
     const list = Object.values(SC2_DATA.entities)
-      .filter(e => e.race === race && e.type === tab && e.id !== 'larva')
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .filter(e => e.race === race && e.type === tab && e.id !== 'larva');
 
-    // Update tab active states
     for (const btn of document.querySelectorAll('#forge-browse-tabs .browse-tab')) {
       btn.classList.toggle('active', btn.dataset.tab === tab);
+    }
+    grid.classList.toggle('compact', !!state.forgePaletteCompact);
+    const browseRoot = document.getElementById('forge-browse');
+    if (browseRoot) {
+      browseRoot.dataset.collapsed = state.forgePaletteCollapsed ? 'true' : 'false';
     }
 
     if (!list.length) {
@@ -1747,17 +2524,31 @@
       return;
     }
 
-    grid.innerHTML = list.map(e => {
+    list.sort((a, b) => {
+      const ta = tierOf(a.id), tb = tierOf(b.id);
+      if (ta !== tb) return ta - tb;
+      return a.name.localeCompare(b.name);
+    });
+
+    const parts = [];
+    let lastTier = null;
+    for (const e of list) {
+      const t = tierOf(e.id);
+      if (t !== lastTier) {
+        parts.push(`<div class="palette-tier-label">${TIER_LABELS[t] || ('Tier ' + t)}</div>`);
+        lastTier = t;
+      }
       const cost = `${e.minerals || 0}m${e.gas ? '·' + e.gas + 'g' : ''}`;
       const buildTime = `${e.buildTime}s`;
-      return `
+      parts.push(`
         <button type="button" class="browse-tile" data-id="${e.id}" draggable="true" title="${e.name} — ${cost} · ${buildTime}${e.note ? '\n' + e.note : ''}">
           ${iconHtml(e, { size: 36 })}
           <span class="tile-name">${e.name}</span>
           <span class="tile-cost">${cost} · ${buildTime}</span>
         </button>
-      `;
-    }).join('');
+      `);
+    }
+    grid.innerHTML = parts.join('');
 
     for (const tile of grid.querySelectorAll('.browse-tile')) {
       tile.addEventListener('click', () => {
@@ -1802,6 +2593,124 @@
     for (const r of list.querySelectorAll('.forge-row')) {
       r.classList.remove('drop-above', 'drop-below');
     }
+  }
+
+  // Inline insert popover — opened by clicking a "+ insert" gap between
+  // build rows. Lets the user add an entity at that exact index without
+  // dragging from the palette. Lists recent items first (most likely to
+  // be re-used), then a tier-grouped icon grid for the active race.
+  let _insertPopoverEl = null;
+  let _insertPopoverCleanup = null;
+  function closeInsertPopover() {
+    if (_insertPopoverEl) {
+      _insertPopoverEl.remove();
+      _insertPopoverEl = null;
+    }
+    if (_insertPopoverCleanup) {
+      _insertPopoverCleanup();
+      _insertPopoverCleanup = null;
+    }
+    document.querySelectorAll('.forge-insert.active').forEach(el => el.classList.remove('active'));
+  }
+  function openInsertPopover(insertIdx, anchorEl) {
+    closeInsertPopover();
+    if (anchorEl) anchorEl.classList.add('active');
+
+    const race = state.forgeRace;
+    const recent = (state.forgeRecent[race] || [])
+      .map(id => SC2_DATA.entities[id]).filter(Boolean);
+    const all = Object.values(SC2_DATA.entities)
+      .filter(e => e.race === race && e.id !== 'larva')
+      .sort((a, b) => {
+        const ta = tierOf(a.id), tb = tierOf(b.id);
+        if (ta !== tb) return ta - tb;
+        return a.name.localeCompare(b.name);
+      });
+
+    const renderTile = (e) => {
+      const cost = `${e.minerals || 0}m${e.gas ? '·' + e.gas + 'g' : ''}`;
+      return `<button type="button" class="browse-tile" data-id="${e.id}" title="${e.name} — ${cost} · ${e.buildTime}s">
+        ${iconHtml(e, { size: 28 })}
+      </button>`;
+    };
+
+    const popover = document.createElement('div');
+    popover.className = 'forge-insert-popover';
+    popover.innerHTML = `
+      <button type="button" class="forge-insert-popover-close" title="Close (Esc)">×</button>
+      <input type="text" class="forge-insert-popover-search" placeholder="Filter… type to search, Enter to add first match" autocomplete="off" />
+      ${recent.length ? `<h5>Recent</h5><div class="forge-insert-popover-grid" data-section="recent">${recent.map(renderTile).join('')}</div>` : ''}
+      <h5>All ${capitalize(race)} — by tier</h5>
+      <div class="forge-insert-popover-grid" data-section="all">${all.map(renderTile).join('')}</div>
+    `;
+
+    // Position the popover next to the anchor, clamped to the viewport.
+    const rect = anchorEl.getBoundingClientRect();
+    popover.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    popover.style.left = `${Math.max(8, Math.min(rect.left + window.scrollX, window.innerWidth - 396))}px`;
+    document.body.appendChild(popover);
+    _insertPopoverEl = popover;
+
+    const search = popover.querySelector('.forge-insert-popover-search');
+    search.focus();
+
+    const insertEntity = (id) => {
+      state.forgeOrder.splice(insertIdx, 0, { entityId: id, repeat: 1 });
+      recordRecent(id);
+      closeInsertPopover();
+      renderForgeList();
+      renderForgeQuickAdd();
+      scheduleForgeRun();
+    };
+
+    for (const tile of popover.querySelectorAll('.browse-tile')) {
+      tile.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        insertEntity(tile.dataset.id);
+      });
+    }
+
+    search.addEventListener('input', () => {
+      const q = search.value.toLowerCase().trim();
+      let firstMatch = null;
+      for (const tile of popover.querySelectorAll('.browse-tile')) {
+        const e = SC2_DATA.entities[tile.dataset.id];
+        const hay = `${e.name} ${e.note || ''}`.toLowerCase();
+        const m = !q || hay.includes(q);
+        tile.style.display = m ? '' : 'none';
+        if (m && !firstMatch) firstMatch = tile.dataset.id;
+      }
+      popover.dataset.firstMatch = firstMatch || '';
+    });
+    search.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const id = popover.dataset.firstMatch;
+        if (id) insertEntity(id);
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        closeInsertPopover();
+      }
+    });
+
+    popover.querySelector('.forge-insert-popover-close').addEventListener('click', closeInsertPopover);
+
+    const onDocClick = (ev) => {
+      if (popover.contains(ev.target)) return;
+      if (anchorEl && anchorEl.contains(ev.target)) return;
+      closeInsertPopover();
+    };
+    const onDocKey = (ev) => {
+      if (ev.key === 'Escape') closeInsertPopover();
+    };
+    setTimeout(() => {
+      document.addEventListener('click', onDocClick);
+      document.addEventListener('keydown', onDocKey);
+    }, 0);
+    _insertPopoverCleanup = () => {
+      document.removeEventListener('click', onDocClick);
+      document.removeEventListener('keydown', onDocKey);
+    };
   }
 
   function renderForgeQuickAdd() {
@@ -1877,8 +2786,19 @@
 
   function renderForgeList() {
     const root = document.getElementById('forge-list');
+    // Update the divider's step count: total steps + total expanded actions
+    // (a step with repeat:5 contributes 5 actions). Keeps the user oriented
+    // even when the list scrolls past the divider.
+    const countEl = document.getElementById('forge-list-count');
+    if (countEl) {
+      const stepCount = state.forgeOrder.filter(s => !s.kind || s.kind !== 'priority').length;
+      const actionCount = state.forgeOrder.reduce((a, s) => a + (s.kind ? 1 : (s.repeat || 1)), 0);
+      countEl.textContent = stepCount === actionCount
+        ? `${stepCount} step${stepCount === 1 ? '' : 's'}`
+        : `${stepCount} step${stepCount === 1 ? '' : 's'} · ${actionCount} actions`;
+    }
     if (!state.forgeOrder.length) {
-      root.innerHTML = '<div class="forge-empty">No actions yet — click a quick-add chip, search below, or load a preset. Drag an icon in to insert at any spot.</div>';
+      root.innerHTML = '<div class="forge-empty">Empty build. Use the palette above to add steps — click an icon, type / to search, or pick a preset.</div>';
       attachForgeListContainerDrop(root);
       return;
     }
@@ -2014,12 +2934,44 @@
           </div>
         </div>
       `;
-    }).join('');
-    root.innerHTML = rows;
+    });
+    // Interleave inline insert points: a thin div between every row and
+    // before the first / after the last. Clicking opens a popover that
+    // adds an entity at that index, so users don't have to drag from
+    // the palette or scroll back to the top.
+    const rowsHtml = rows.map((html, i) =>
+      `<div class="forge-insert" data-insert-idx="${i}" title="Insert here"></div>${html}`
+    ).join('') + `<div class="forge-insert" data-insert-idx="${rows.length}" title="Insert at end"></div>`;
+    root.innerHTML = rowsHtml;
 
-    // Wire input/button handlers
-    for (const el of root.querySelectorAll('input[data-act], button[data-act]')) {
-      const handler = (ev) => {
+    // Wire insert points
+    for (const ip of root.querySelectorAll('.forge-insert')) {
+      ip.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openInsertPopover(parseInt(ip.dataset.insertIdx, 10), ip);
+      });
+    }
+
+    // Wire input/button handlers.
+    // The repeat input was previously bound to BOTH `click` and `change`
+    // via a shared handler — clicking to focus the field would reread
+    // the (unchanged) value and call scheduleForgeRun(), which then
+    // re-rendered the list 180ms later and destroyed the input
+    // mid-edit. Now the number field uses `change` only, and the
+    // buttons use `click` only.
+    for (const el of root.querySelectorAll('input[data-act="repeat"]')) {
+      el.addEventListener('change', (ev) => {
+        const row = ev.target.closest('.forge-row');
+        const idx = parseInt(row.dataset.idx, 10);
+        const v = parseInt(ev.target.value, 10);
+        if (v > 0 && v <= 50) {
+          state.forgeOrder[idx].repeat = v;
+          scheduleForgeRun();
+        }
+      });
+    }
+    for (const el of root.querySelectorAll('button[data-act]')) {
+      el.addEventListener('click', (ev) => {
         const row = ev.target.closest('.forge-row');
         const idx = parseInt(row.dataset.idx, 10);
         const act = ev.target.dataset.act;
@@ -2027,12 +2979,6 @@
           state.forgeOrder.splice(idx, 1);
           renderForgeList();
           scheduleForgeRun();
-        } else if (act === 'repeat') {
-          const v = parseInt(ev.target.value, 10);
-          if (v > 0 && v <= 50) {
-            state.forgeOrder[idx].repeat = v;
-            scheduleForgeRun();
-          }
         } else if (act === 'prio-up' || act === 'prio-down') {
           const pos = parseInt(ev.target.dataset.pos, 10);
           const step = state.forgeOrder[idx];
@@ -2046,9 +2992,7 @@
           renderForgeList();
           scheduleForgeRun();
         }
-      };
-      el.addEventListener('click', handler);
-      el.addEventListener('change', handler);
+      });
     }
 
     // Drag-and-drop: reorder existing rows, OR insert from browse/recent.
@@ -2336,6 +3280,16 @@
     });
     state.forgeResult = result;
     renderForgeResult();
+    // Defensively skip the list re-render if the user is currently
+    // editing a control inside the list (e.g., the repeat number
+    // input). renderForgeList replaces innerHTML, which would destroy
+    // the focused element and discard any partial input. The list will
+    // refresh on the user's next action — no info lost.
+    const ae = document.activeElement;
+    const listEl = document.getElementById('forge-list');
+    if (ae && listEl && listEl.contains(ae) && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
+      return;
+    }
     renderForgeList(); // refresh per-row resource state
   }
 
@@ -2361,13 +3315,25 @@
     const r = state.forgeResult;
     const totalCost = r.timeline.reduce((acc, t) => ({ m: acc.m + t.mins, g: acc.g + t.gas }), { m: 0, g: 0 });
     const finalState = r.sim.history[r.sim.history.length - 1];
-    const roster = summarizeRoster(r.timeline);
+    const roster = summarizeRoster(r.timeline, state.forgeRace);
     const producerUtil = computeProducerUtilization(r.timeline, r.eft, state.forgeRace);
 
     const warningsHtml = r.warnings.length
       ? `<div class="forge-warnings">
           <h4>⚠ Issues (${r.warnings.length})</h4>
           ${r.warnings.map(w => `<div class="forge-warning">Step ${w.index + 1}${w.t != null ? ' @ ' + fmtTime(w.t) : ''}: ${w.msg}</div>`).join('')}
+        </div>`
+      : '';
+
+    // Float / idle-economy detection — surface stretches where a resource
+    // builds up unspent for long enough that the player has spare income
+    // they could have committed elsewhere. Flagging the worst stretch per
+    // resource keeps it actionable; tooltip shows when.
+    const floats = detectResourceFloats(r.sim.history);
+    const insightsHtml = floats.length
+      ? `<div class="forge-insights">
+          <h4>💡 Insights</h4>
+          ${floats.map(f => `<div class="forge-insight" title="Floated ${f.peak.toFixed(0)} ${f.label} for ${f.duration.toFixed(0)}s, peaking at ${fmtTime(f.peakAt)}.">📈 Floating ${f.label}: held ${f.peak.toFixed(0)}+ for ${f.duration.toFixed(0)}s starting ${fmtTime(f.start)} — economy outpacing spend.</div>`).join('')}
         </div>`
       : '';
 
@@ -2401,22 +3367,24 @@
           ` : ''}
         </div>
         ${warningsHtml}
+        ${insightsHtml}
         ${renderRosterGrid(roster)}
         ${renderProducerUtilization(producerUtil, r.eft)}
-        <div class="path-section">
+        <div class="path-section collapsible-section" data-section-id="forge-resources">
           <h3>Resources over time</h3>
           ${renderResourceChart(r.sim.history, r.eft)}
         </div>
-        <div class="path-section">
+        <div class="path-section collapsible-section" data-section-id="forge-timeline">
           <h3>Build timeline</h3>
           ${renderSimGantt(r.timeline, r.eft, null, 0)}
         </div>
-        <div class="path-section">
+        <div class="path-section collapsible-section" data-section-id="forge-stepdetail">
           <h3>Step detail</h3>
           ${renderForgeTimeline(r.timeline)}
         </div>
       </div>
     `;
+    applyStoredCollapseStates(root);
     // Wire up the chart hover after DOM is in place
     const chartWrap = root.querySelector('[data-chart="resources"]');
     if (chartWrap && r.sim.history && r.sim.history.length > 1) {
@@ -2427,20 +3395,61 @@
 
   // Bucket completed timeline actions by entity and group (army / tech / upgrades).
   // Workers are pulled out of "army" because counting SCVs alongside marines reads weird.
-  function summarizeRoster(timeline) {
+  //
+  // Reflects what you HAVE at the end of the build, not what you BUILT:
+  //   - Starting roster (12 workers + main, plus Overlord for Zerg) is
+  //     seeded so a fresh sim with no morphs still shows them.
+  //   - In-place morphs (CC→OC/PF, Hatch→Lair→Hive, Spire→Greater Spire,
+  //     Hydra→Lurker, Roach→Ravager, Corruptor→Brood Lord, Overlord→
+  //     Overseer, Templar→Archon, etc.) decrement the source so we don't
+  //     double-count. Without the morph decrement, "1 CC built + 2 OC
+  //     morphs" looked like 3 base buildings instead of 2, suggesting a
+  //     phantom CC for the OC to morph from.
+  function summarizeRoster(timeline, race) {
     const groups = { workers: new Map(), army: new Map(), tech: new Map(), upgrades: new Map() };
+    const bucketFor = (e) => {
+      if (!e) return null;
+      if (e.type === 'upgrade') return groups.upgrades;
+      if (e.type === 'building' || e.type === 'addon') return groups.tech;
+      if (e.role === 'worker') return groups.workers;
+      if (e.type === 'unit') return groups.army;
+      return null;
+    };
+    for (const seed of (RACE_STARTING_ROSTER[race] || [])) {
+      const b = bucketFor(SC2_DATA.entities[seed.id]);
+      if (b) b.set(seed.id, (b.get(seed.id) || 0) + seed.count);
+    }
+    // Unit morphs (Baneling←Zergling, Ravager←Roach, Lurker←Hydra,
+    // Brood Lord←Corruptor, Overseer←Overlord, Archon←Templar) are
+    // encoded as producedBy=<source-unit-id> rather than upgradeFrom.
+    // Archon is the only one that consumes 2 sources per morph.
+    const consumesSourcePerMorph = (e) => {
+      if (e.upgradeFrom) return { srcId: e.upgradeFrom, count: 1 };
+      const prodBy = e.producedBy && SC2_DATA.entities[e.producedBy];
+      if (prodBy && prodBy.type === 'unit') {
+        return { srcId: e.producedBy, count: e.id === 'archon' ? 2 : 1 };
+      }
+      return null;
+    };
     for (const item of timeline) {
       const e = SC2_DATA.entities[item.id];
-      if (!e) continue;
-      let bucket;
-      if (e.type === 'upgrade') bucket = groups.upgrades;
-      else if (e.type === 'building' || e.type === 'addon') bucket = groups.tech;
-      else if (e.role === 'worker') bucket = groups.workers;
-      else if (e.type === 'unit') bucket = groups.army;
-      else continue;
+      const bucket = bucketFor(e);
+      if (!bucket) continue;
       bucket.set(item.id, (bucket.get(item.id) || 0) + 1);
+      const morph = consumesSourcePerMorph(e);
+      if (morph) {
+        const src = SC2_DATA.entities[morph.srcId];
+        const srcBucket = bucketFor(src);
+        if (srcBucket) {
+          const cur = srcBucket.get(morph.srcId) || 0;
+          const next = cur - morph.count;
+          if (next <= 0) srcBucket.delete(morph.srcId);
+          else srcBucket.set(morph.srcId, next);
+        }
+      }
     }
     const toList = (m) => [...m.entries()]
+      .filter(([_, count]) => count > 0)
       .map(([id, count]) => ({ entity: SC2_DATA.entities[id], count }))
       .sort((a, b) => b.count - a.count || a.entity.name.localeCompare(b.entity.name));
     return {
@@ -2450,6 +3459,12 @@
       upgrades: toList(groups.upgrades),
     };
   }
+  const RACE_STARTING_ROSTER = {
+    terran:  [{ id: 'command_center', count: 1, group: 'tech' }, { id: 'scv',   count: 12, group: 'workers' }],
+    protoss: [{ id: 'nexus',          count: 1, group: 'tech' }, { id: 'probe', count: 12, group: 'workers' }],
+    zerg:    [{ id: 'hatchery',       count: 1, group: 'tech' }, { id: 'drone', count: 12, group: 'workers' },
+              { id: 'overlord',       count: 1, group: 'army' }],
+  };
 
   function rosterTotal(list) { return list.reduce((a, x) => a + x.count, 0); }
 
@@ -2474,7 +3489,7 @@
       { key: 'upgrades',label: 'Upgrades' },
     ].filter(s => roster[s.key].length);
     if (!sections.length) return '';
-    return `<div class="path-section">
+    return `<div class="path-section collapsible-section" data-section-id="forge-roster">
       <h3>Roster</h3>
       <div class="roster-grid">
         ${sections.map(s => `
@@ -2738,6 +3753,15 @@
           break;
         }
         if (!placed) {
+          // Fallback: if no lane satisfied all the constraints we still
+          // have to put the interval somewhere so the visualization
+          // matches what the simulator scheduled. lanes[0] is used as
+          // an "approximate" host. This isn't pixel-perfect (a 2nd OC
+          // can visually land on a CC that's already been upgraded if
+          // form/timing constraints don't line up), but flagging every
+          // such case with a warning lane was over-eager — it fired
+          // even on builds that were actually valid. Revisit with a
+          // more precise diagnosis when needed.
           lanes[0].intervals.push(iv);
           laneFreeAt[0] = Math.max(laneFreeAt[0], iv.end);
         }
@@ -2783,18 +3807,21 @@
       if (u.reactorCount > 0) labelParts.push(u.reactorCount > 1 ? `+${u.reactorCount} reactors` : '+reactor');
       const slotsLabel = labelParts.join(' ');
       const tracks = u.lanes.map(lane => {
+        const isOrphan = lane.type === 'orphan';
         const aliveEnd = Math.min(lane.tDeath === Infinity ? eft : lane.tDeath, eft);
         const availLeft = pct(lane.tAvail);
         const availWidth = Math.max(0, pct(aliveEnd) - availLeft);
         const segs = lane.intervals.map(iv => {
           const left = pct(iv.start);
           const width = Math.max(0.4, pct(iv.end) - left);
-          const t = `${iv.name} · ${fmtTime(iv.start)} → ${fmtTime(iv.end)} (${fmtTime(iv.end - iv.start)})`;
-          return `<div class="prod-util-seg" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${t}"></div>`;
+          const tipNote = isOrphan ? ' · ⚠ no eligible producer was free at this time' : '';
+          const t = `${iv.name} · ${fmtTime(iv.start)} → ${fmtTime(iv.end)} (${fmtTime(iv.end - iv.start)})${tipNote}`;
+          return `<div class="prod-util-seg${isOrphan ? ' prod-util-seg-orphan' : ''}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${t}"></div>`;
         }).join('');
         return `
-          <div class="prod-util-track">
-            ${availWidth > 0 ? `<div class="prod-util-avail" style="left:${availLeft.toFixed(2)}%;width:${availWidth.toFixed(2)}%"></div>` : ''}
+          <div class="prod-util-track${isOrphan ? ' prod-util-track-orphan' : ''}"${isOrphan ? ' title="These actions had no eligible producer ready at their start time — usually a missing or not-yet-built upgrade source"' : ''}>
+            ${isOrphan ? '<span class="prod-util-orphan-label">⚠ unassigned</span>' : ''}
+            ${availWidth > 0 && !isOrphan ? `<div class="prod-util-avail" style="left:${availLeft.toFixed(2)}%;width:${availWidth.toFixed(2)}%"></div>` : ''}
             ${segs}
           </div>
         `;
@@ -2837,7 +3864,7 @@
     const minWidthPx = Math.max(640, Math.round(eft * 2.5));
 
     return `
-      <div class="path-section">
+      <div class="path-section collapsible-section" data-section-id="forge-producer-util">
         ${heading}
         <div class="prod-util-scroll">
           <div class="prod-util" style="min-width:${minWidthPx}px">${rows}${axis}</div>
@@ -2845,6 +3872,50 @@
         ${legend}
       </div>
     `;
+  }
+
+  // Find sustained intervals where a resource pile is excessively high —
+  // a heuristic for "floating", i.e. the player isn't spending fast enough.
+  // Thresholds are chosen to flag clearly-actionable cases without firing
+  // on the unavoidable warmup minute or on the brief stockpile before a
+  // pricey unit (e.g. a Battlecruiser's 400m). Returns the worst stretch
+  // per resource (minerals, gas), or [] if nothing meaningful is found.
+  const FLOAT_THRESHOLDS = {
+    minerals: { amount: 600, minDuration: 20 },
+    gas: { amount: 300, minDuration: 20 },
+  };
+  function detectResourceFloats(history) {
+    if (!Array.isArray(history) || history.length < 4) return [];
+    const out = [];
+    const checks = [
+      { key: 'minerals', label: 'minerals', cfg: FLOAT_THRESHOLDS.minerals },
+      { key: 'gas', label: 'gas', cfg: FLOAT_THRESHOLDS.gas },
+    ];
+    for (const c of checks) {
+      let bStart = null, bPeak = 0, bPeakAt = 0, best = null;
+      for (let i = 0; i < history.length; i++) {
+        const h = history[i];
+        const v = h[c.key] || 0;
+        if (v >= c.cfg.amount) {
+          if (bStart == null) { bStart = h.t; bPeak = v; bPeakAt = h.t; }
+          if (v > bPeak) { bPeak = v; bPeakAt = h.t; }
+        } else if (bStart != null) {
+          const dur = h.t - bStart;
+          if (dur >= c.cfg.minDuration && (!best || dur > best.duration)) {
+            best = { label: c.label, start: bStart, duration: dur, peak: bPeak, peakAt: bPeakAt };
+          }
+          bStart = null; bPeak = 0; bPeakAt = 0;
+        }
+      }
+      if (bStart != null) {
+        const dur = history[history.length - 1].t - bStart;
+        if (dur >= c.cfg.minDuration && (!best || dur > best.duration)) {
+          best = { label: c.label, start: bStart, duration: dur, peak: bPeak, peakAt: bPeakAt };
+        }
+      }
+      if (best) out.push(best);
+    }
+    return out;
   }
 
   function renderResourceChart(history, eft) {
@@ -2855,7 +3926,11 @@
     const innerH = H - PAD.top - PAD.bottom;
     const tMax = Math.max(eft || 0, history[history.length - 1].t, 1);
     const resMax = Math.max(50, ...history.map(h => Math.max(h.minerals, h.gas)));
-    const supMax = Math.max(15, ...history.map(h => h.supply_max));
+    // Right-side axis covers both supply cap AND total worker count, since
+    // they're both small integer counts and tend to stay within ~200. The
+    // ticks are computed from this combined max so both lines are readable.
+    const workerCounts = history.map(h => (h.mineral_workers || 0) + (h.gas_workers || 0));
+    const supMax = Math.max(15, ...history.map(h => h.supply_max), ...workerCounts);
 
     const xS = t => PAD.left + (t / tMax) * innerW;
     const yR = v => PAD.top + innerH - (v / resMax) * innerH;
@@ -2868,6 +3943,7 @@
     const gasPts = history.map(h => ({ x: xS(h.t), y: yR(h.gas) }));
     const supUsedPts = history.map(h => ({ x: xS(h.t), y: yS(h.supply_used) }));
     const supMaxPts = history.map(h => ({ x: xS(h.t), y: yS(h.supply_max) }));
+    const workerPts = history.map((h, i) => ({ x: xS(h.t), y: yS(workerCounts[i]) }));
 
     // Y-axis ticks (left = resources, right = supply)
     const resTicks = [0, 0.5, 1].map(f => Math.round(resMax * f));
@@ -2919,6 +3995,8 @@
           <path d="${path(supMaxPts)}" class="line line-sup-max" />
           <!-- supply used -->
           <path d="${path(supUsedPts)}" class="line line-sup" />
+          <!-- workers (total, right axis — same scale as supply) -->
+          <path d="${path(workerPts)}" class="line line-workers" />
           <!-- gas -->
           <path d="${path(gasPts)}" class="line line-gas" />
           <!-- minerals -->
@@ -2931,12 +4009,14 @@
             <circle class="hover-dot dot-min" r="3" />
             <circle class="hover-dot dot-gas" r="3" />
             <circle class="hover-dot dot-sup" r="3" />
+            <circle class="hover-dot dot-workers" r="3" />
           </g>
         </svg>
         <div class="chart-tooltip" style="display:none"></div>
         <div class="chart-legend">
           <span><span class="swatch swatch-min"></span> Minerals</span>
           <span><span class="swatch swatch-gas"></span> Gas</span>
+          <span><span class="swatch swatch-workers"></span> Workers</span>
           <span><span class="swatch swatch-sup"></span> Supply used</span>
           <span><span class="swatch swatch-sup-max"></span> Supply cap</span>
           ${blockedIvs.length ? `<span><span class="swatch swatch-blocked"></span> Supply blocked</span>` : ''}
@@ -2955,6 +4035,7 @@
     const dotMin = wrap.querySelector('.dot-min');
     const dotGas = wrap.querySelector('.dot-gas');
     const dotSup = wrap.querySelector('.dot-sup');
+    const dotWorkers = wrap.querySelector('.dot-workers');
 
     // Same constants as renderResourceChart — keep in sync if you change one
     const W = 720, H = 220;
@@ -2963,7 +4044,8 @@
     const innerH = H - PAD.top - PAD.bottom;
     const tMax = Math.max(eft || 0, history[history.length - 1].t, 1);
     const resMax = Math.max(50, ...history.map(h => Math.max(h.minerals, h.gas)));
-    const supMax = Math.max(15, ...history.map(h => h.supply_max));
+    const workerCounts = history.map(h => (h.mineral_workers || 0) + (h.gas_workers || 0));
+    const supMax = Math.max(15, ...history.map(h => h.supply_max), ...workerCounts);
     const xS = t => PAD.left + (t / tMax) * innerW;
     const yR = v => PAD.top + innerH - (v / resMax) * innerH;
     const yS = v => PAD.top + innerH - (v / supMax) * innerH;
@@ -3002,6 +4084,8 @@
       dotMin.setAttribute('cx', xS(h.t)); dotMin.setAttribute('cy', yR(h.minerals));
       dotGas.setAttribute('cx', xS(h.t)); dotGas.setAttribute('cy', yR(h.gas));
       dotSup.setAttribute('cx', xS(h.t)); dotSup.setAttribute('cy', yS(h.supply_used));
+      const wCount = (h.mineral_workers || 0) + (h.gas_workers || 0);
+      dotWorkers.setAttribute('cx', xS(h.t)); dotWorkers.setAttribute('cy', yS(wCount));
 
       const supplyBlocked = h.supply_max > 0 && h.supply_used >= h.supply_max;
       tooltip.style.display = 'block';
@@ -3059,6 +4143,18 @@
 
   function renderScoutPanel() {
     populateScoutDropdowns();
+    const sel = document.getElementById('scout-entity');
+    renderEntityPickerGrid({
+      gridEl: document.getElementById('scout-grid'),
+      typesContainer: document.getElementById('scout-type-tabs'),
+      race: state.scoutRace,
+      type: state.scoutPickerType,
+      currentId: sel ? sel.value : null,
+      onPick: (id) => {
+        if (sel) sel.value = id;
+        renderScoutPanel();
+      },
+    });
     renderScoutList();
     renderScoutResult();
   }
@@ -3282,18 +4378,22 @@
         <div style="font-size:12px;color:var(--text-3);margin-top:6px;">Each entity simulated independently with the standard opening. Numbers reflect realistic earliest with full economy.</div>
       </div>
     `;
+    const renderItem = (r, extraCls = '') => `
+      <div class="window-item ${extraCls}" title="${r.entity.name} — ready by ${fmtTime(r.eft)}">
+        ${iconHtml(r.entity, { size: 32 })}
+        <div class="window-item-text">
+          <div class="window-item-name">${r.entity.name}</div>
+          <div class="window-item-time">${fmtTimeBoth(r.eft)}</div>
+        </div>
+      </div>
+    `;
     for (const [label, list] of Object.entries(groups)) {
       if (!list.length) continue;
       html += `
         <div class="window-group">
-          <h4>${label}</h4>
+          <h4>${label} <span class="window-group-count">${list.length}</span></h4>
           <div class="window-list">
-            ${list.map(r => `
-              <div class="item">
-                <span>${r.entity.name}</span>
-                <span class="item-time">${fmtTimeBoth(r.eft)}</span>
-              </div>
-            `).join('')}
+            ${list.map(r => renderItem(r)).join('')}
           </div>
         </div>
       `;
@@ -3301,14 +4401,9 @@
     if (unreachable.length) {
       html += `
         <div class="window-group">
-          <h4>Not yet reachable</h4>
+          <h4>Not yet reachable <span class="window-group-count">${unreachable.length}</span></h4>
           <div class="window-list">
-            ${unreachable.slice(0, 30).map(r => `
-              <div class="item unreachable">
-                <span>${r.entity.name}</span>
-                <span class="item-time">${fmtTimeBoth(r.eft)}</span>
-              </div>
-            `).join('')}
+            ${unreachable.slice(0, 30).map(r => renderItem(r, 'unreachable')).join('')}
           </div>
         </div>
       `;
@@ -3349,7 +4444,10 @@
             <tbody>
               ${list.map(e => `
                 <tr>
-                  <td><strong>${e.name}</strong></td>
+                  <td class="col-name-with-icon">
+                    <span class="ref-row-icon">${iconHtml(e, { size: 24 })}</span>
+                    <strong>${e.name}</strong>
+                  </td>
                   <td class="num">${e.buildTime}</td>
                   <td class="num">${e.minerals ?? ''}</td>
                   <td class="num">${e.gas || ''}</td>
@@ -3456,15 +4554,13 @@
       });
     });
 
-    // Global toggles
-    document.getElementById('real-time-toggle').addEventListener('change', e => {
-      state.realTime = e.target.checked;
-      renderActive();
-    });
-    document.getElementById('chrono-toggle').addEventListener('change', e => {
-      state.chrono = e.target.checked;
-      renderActive();
-    });
+    // The old global "Real time" / "Apply chrono boost" toggles were
+    // removed from the header — they were ambient settings that didn't
+    // belong as global. Real-time is now per-tab where it matters
+    // (Window Lookup has a basis select; Forge result shows both side-by-
+    // side). Chrono is per-step in the Forge (see chrono toggle on rows)
+    // and has its own control on Window Lookup. state.chrono and
+    // state.realTime stay as defaults but no longer wired to a UI toggle.
 
     // Explorer
     document.getElementById('explorer-target').addEventListener('change', e => {
@@ -3514,6 +4610,9 @@
 
     // Build Library button — opens the manager modal
     document.getElementById('forge-library').addEventListener('click', openBuildLibrary);
+
+    // Share button — opens text/SALT export + SALT import modal
+    document.getElementById('forge-share').addEventListener('click', openShareModal);
 
     // JSON file input is shared between the library modal's "Import JSON"
     // button and any drag-drop affordances we add later. The modal sets
@@ -3601,6 +4700,37 @@
         renderForgeBrowse();
       });
     }
+    // Compact palette toggle — icons-only mode for users with long builds
+    const compactToggle = document.getElementById('forge-palette-compact');
+    if (compactToggle) {
+      compactToggle.checked = !!state.forgePaletteCompact;
+      compactToggle.addEventListener('change', () => {
+        state.forgePaletteCompact = compactToggle.checked;
+        renderForgeBrowse();
+        persistForge();
+      });
+    }
+    // Palette collapse — chevron at the right of the palette head. Hides
+    // the icon grid entirely so the build list takes the full column.
+    const collapseToggle = document.getElementById('forge-palette-collapse');
+    if (collapseToggle) {
+      collapseToggle.addEventListener('click', () => {
+        state.forgePaletteCollapsed = !state.forgePaletteCollapsed;
+        renderForgeBrowse();
+        persistForge();
+      });
+    }
+    // Global "/" hotkey: focus the Forge search bar from anywhere in the
+    // Forge tab, so adding a unit is always one keystroke away.
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key !== '/') return;
+      if (state.mode !== 'forge') return;
+      const t = ev.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      ev.preventDefault();
+      const s = document.getElementById('forge-add-search');
+      if (s) { s.focus(); s.select(); }
+    });
     // Forge add-search filter (mirrors explorer search)
     const forgeSearch = document.getElementById('forge-add-search');
     const forgeAddSel = document.getElementById('forge-add-entity');
@@ -3624,6 +4754,10 @@
     forgeSearch.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' && forgeAddSel.value) {
         document.getElementById('forge-add-btn').click();
+      } else if (ev.key === 'Escape') {
+        forgeSearch.value = '';
+        forgeSearch.dispatchEvent(new Event('input'));
+        forgeSearch.blur();
       }
     });
 
@@ -3663,12 +4797,32 @@
       }
     });
 
+    // Tech Explorer entity-picker tabs (race + type)
+    for (const tab of document.querySelectorAll('#explorer-race-tabs [data-race]')) {
+      tab.addEventListener('click', () => {
+        state.explorerPickerRace = tab.dataset.race;
+        renderExplorer();
+      });
+    }
+    for (const tab of document.querySelectorAll('#explorer-type-tabs [data-type]')) {
+      tab.addEventListener('click', () => {
+        state.explorerPickerType = tab.dataset.type;
+        renderExplorer();
+      });
+    }
+
     // Scout
     document.getElementById('scout-race').addEventListener('change', e => {
       state.scoutRace = e.target.value;
       state.scouts = []; // race change clears scouts
       renderScoutPanel();
     });
+    for (const tab of document.querySelectorAll('#scout-type-tabs [data-type]')) {
+      tab.addEventListener('click', () => {
+        state.scoutPickerType = tab.dataset.type;
+        renderScoutPanel();
+      });
+    }
     document.getElementById('scout-add-btn').addEventListener('click', () => {
       const id = document.getElementById('scout-entity').value;
       const eventType = document.getElementById('scout-event').value;
@@ -3696,20 +4850,48 @@
       state.windowBasis = e.target.value;
       renderWindow();
     });
+    // Window-Lookup-only chrono toggle (replaces the old global toggle).
+    // Drives state.chrono so the existing engine compile path picks it up.
+    const windowChrono = document.getElementById('window-chrono');
+    if (windowChrono) {
+      windowChrono.checked = !!state.chrono;
+      windowChrono.addEventListener('change', () => {
+        state.chrono = windowChrono.checked;
+        renderWindow();
+      });
+    }
 
     // Notes block
     document.getElementById('notes-list').innerHTML = SC2_DATA.notes.map(n => `<li>${n}</li>`).join('');
     document.getElementById('patch-info').textContent = `Patch: ${SC2_DATA.patch}`;
 
-    // Restore Forge state from localStorage (if any)
+    // Restore Forge state from localStorage (if any). If nothing is saved
+    // yet, seed a default build so the new-visitor view isn't empty —
+    // see seedDefaultBuildIfFirstLoad() for why this can't clobber saves.
     const restored = restoreForge();
+    if (!restored) seedDefaultBuildIfFirstLoad();
 
     renderAll();
 
-    // Trigger initial sim if we restored a build
-    if (restored && state.forgeOrder.length) {
+    // Trigger initial sim if we have a build (restored OR seeded default)
+    if (state.forgeOrder.length) {
       runForge();
     }
+
+    // Delegated click handler for collapsible sections — any h3 inside a
+    // .collapsible-section toggles its parent's data-collapsed attribute
+    // and persists the choice. Using delegation so panels rendered on
+    // demand (live forge result re-renders) still respond without being
+    // re-wired each time.
+    document.addEventListener('click', (ev) => {
+      const h3 = ev.target.closest('.collapsible-section > h3');
+      if (!h3) return;
+      const section = h3.parentElement;
+      const id = section.dataset.sectionId;
+      if (!id) return;
+      const nowCollapsed = toggleSectionCollapsed(id);
+      section.dataset.collapsed = nowCollapsed ? 'true' : 'false';
+    });
   }
 
   document.addEventListener('DOMContentLoaded', init);

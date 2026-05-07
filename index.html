@@ -11,25 +11,15 @@
     <div class="container">
       <div class="title-row">
         <h1>SC2 Timings</h1>
-        <span class="subtitle">Threat-centric timing reference for Terran (and friends)</span>
-      </div>
-      <div class="global-controls">
-        <label class="toggle">
-          <input type="checkbox" id="real-time-toggle" />
-          <span>Real time (Faster ÷1.4)</span>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="chrono-toggle" />
-          <span>Apply chrono boost (Protoss, optimistic)</span>
-        </label>
+        <span class="subtitle">Build planner · timing reference · replay tools</span>
       </div>
     </div>
   </header>
 
   <nav class="mode-nav">
     <div class="container">
-      <button class="mode-btn active" data-mode="explorer">Tech Explorer</button>
-      <button class="mode-btn" data-mode="forge">Build Forge</button>
+      <button class="mode-btn active" data-mode="forge">Build Forge</button>
+      <button class="mode-btn" data-mode="explorer">Tech Explorer</button>
       <button class="mode-btn" data-mode="scout">Scout Translator</button>
       <button class="mode-btn" data-mode="window">Window Lookup</button>
       <button class="mode-btn" data-mode="reference">Reference</button>
@@ -38,7 +28,7 @@
 
   <main class="container">
     <!-- ============== TECH EXPLORER ============== -->
-    <section id="mode-explorer" class="mode-panel active">
+    <section id="mode-explorer" class="mode-panel">
       <div class="panel-head">
         <h2>Tech Explorer</h2>
         <p>Pick any unit or building. The simulator runs a full economy (minerals, gas, supply, workers, Pylon power) and reports the realistic earliest time, plus the theoretical-minimum tech-tree time for comparison.</p>
@@ -67,11 +57,28 @@
         </label>
       </div>
 
+      <div class="entity-picker collapsible-section" data-section-id="explorer-picker">
+        <h3>Pick from grid</h3>
+        <div class="entity-picker-controls">
+          <div class="entity-picker-races" id="explorer-race-tabs">
+            <button type="button" class="race-tab" data-race="terran">Terran</button>
+            <button type="button" class="race-tab" data-race="protoss">Protoss</button>
+            <button type="button" class="race-tab" data-race="zerg">Zerg</button>
+          </div>
+          <div class="entity-picker-types" id="explorer-type-tabs">
+            <button type="button" class="browse-tab active" data-type="unit">Units</button>
+            <button type="button" class="browse-tab" data-type="building">Buildings</button>
+            <button type="button" class="browse-tab" data-type="upgrade">Upgrades</button>
+          </div>
+        </div>
+        <div class="forge-browse-grid entity-picker-grid" id="explorer-grid"></div>
+      </div>
+
       <div id="explorer-result"></div>
     </section>
 
     <!-- ============== BUILD FORGE ============== -->
-    <section id="mode-forge" class="mode-panel">
+    <section id="mode-forge" class="mode-panel active">
       <div class="panel-head">
         <h2>Build Forge</h2>
         <p>Compose a build order step-by-step. The simulator runs your exact list — no greedy planner — so you can see precisely when each action lands, what blocks it, and how decisions cascade.</p>
@@ -97,6 +104,9 @@
           <input type="file" id="forge-load-input" accept=".json,application/json" style="display:none" />
         </label>
         <label style="align-self: end;">
+          <button id="forge-share" class="ghost" type="button" title="Copy build order as text or SALT, or import from SALT">⤴ Share</button>
+        </label>
+        <label style="align-self: end;">
           <button id="forge-clear" class="ghost" type="button">Clear</button>
         </label>
         <label style="align-self: end; flex:1; text-align:right; color:var(--text-3); font-size:12px;">
@@ -113,35 +123,47 @@
 
       <div class="forge-layout">
         <div class="forge-column forge-editor">
-          <div class="forge-editor-head">
-            <h3 class="forge-h3">Build Order</h3>
-            <div id="forge-quick-add" class="forge-quick-add"></div>
-          </div>
-          <div id="forge-list" class="forge-list"></div>
-          <div class="forge-add">
-            <div class="combo-search" style="flex: 1;">
-              <input type="text" id="forge-add-search" placeholder="Type to add (e.g. probe, gateway, storm)…" autocomplete="off" />
-              <select id="forge-add-entity" size="1"></select>
+          <div class="forge-editor-fixed">
+            <div class="forge-add">
+              <div class="combo-search" style="flex: 1;">
+                <input type="text" id="forge-add-search" placeholder="Press / — type unit, building, or upgrade…" autocomplete="off" />
+                <select id="forge-add-entity" size="1"></select>
+              </div>
+              <input type="number" id="forge-add-count" value="1" min="1" max="50" title="Repeat count" />
+              <button id="forge-add-btn" type="button">+ Add</button>
             </div>
-            <input type="number" id="forge-add-count" value="1" min="1" max="50" title="Repeat count" />
-            <button id="forge-add-btn" type="button">+ Add</button>
-            <button id="forge-add-swap" type="button" class="ghost" title="Add an addon swap step (Terran)">↔ Swap</button>
-            <button id="forge-fill-workers" type="button" class="ghost" title="Insert workers into idle production gaps on your main building(s)">⛏ Fill workers</button>
-            <button id="forge-add-priority" type="button" class="ghost" title="Insert a priority-shift marker — steps after it use a different tier order">⚖ Priority shift</button>
+
+            <div class="forge-action-row">
+              <button id="forge-add-swap" type="button" class="ghost" title="Add an addon swap step (Terran)">↔ Swap</button>
+              <button id="forge-fill-workers" type="button" class="ghost" title="Insert workers into idle production gaps on your main building(s)">⛏ Fill workers</button>
+              <button id="forge-add-priority" type="button" class="ghost" title="Insert a priority-shift marker — steps after it use a different tier order">⚖ Priority shift</button>
+              <div id="forge-quick-add" class="forge-quick-add"></div>
+            </div>
+
+            <div class="forge-browse" id="forge-browse">
+              <div class="forge-browse-head">
+                <div class="forge-browse-tabs" id="forge-browse-tabs">
+                  <button type="button" class="browse-tab active" data-tab="unit">Units</button>
+                  <button type="button" class="browse-tab" data-tab="building">Buildings</button>
+                  <button type="button" class="browse-tab" data-tab="addon">Add-ons</button>
+                  <button type="button" class="browse-tab" data-tab="upgrade">Upgrades</button>
+                </div>
+                <label class="palette-density-toggle" title="Compact: icons only. Comfy: icons with name + cost.">
+                  <input type="checkbox" id="forge-palette-compact" />
+                  <span>Compact</span>
+                </label>
+                <button type="button" class="palette-collapse-toggle" id="forge-palette-collapse" title="Collapse palette grid — gives Build Order more vertical space">▾</button>
+              </div>
+              <div class="forge-browse-grid" id="forge-browse-grid"></div>
+            </div>
           </div>
 
-          <div class="forge-browse">
-            <div class="forge-browse-head">
-              <span class="forge-browse-label">Browse</span>
-              <div class="forge-browse-tabs" id="forge-browse-tabs">
-                <button type="button" class="browse-tab active" data-tab="unit">Units</button>
-                <button type="button" class="browse-tab" data-tab="building">Buildings</button>
-                <button type="button" class="browse-tab" data-tab="addon">Add-ons</button>
-                <button type="button" class="browse-tab" data-tab="upgrade">Upgrades</button>
-              </div>
-            </div>
-            <div class="forge-browse-grid" id="forge-browse-grid"></div>
+          <div class="forge-section-divider">
+            <h3 class="forge-section-title">Build Order</h3>
+            <span class="forge-section-count" id="forge-list-count">0 steps</span>
           </div>
+
+          <div id="forge-list" class="forge-list"></div>
         </div>
 
         <div class="forge-column">
@@ -179,6 +201,19 @@
         </div>
       </div>
 
+      <div class="entity-picker collapsible-section" data-section-id="scout-picker">
+        <h3>Pick observation from grid</h3>
+        <div class="entity-picker-controls">
+          <div class="entity-picker-types" id="scout-type-tabs">
+            <button type="button" class="browse-tab active" data-type="unit">Units</button>
+            <button type="button" class="browse-tab" data-type="building">Buildings</button>
+            <button type="button" class="browse-tab" data-type="upgrade">Upgrades</button>
+          </div>
+          <span class="entity-picker-hint">Click an icon, then enter the time you saw it</span>
+        </div>
+        <div class="forge-browse-grid entity-picker-grid" id="scout-grid"></div>
+      </div>
+
       <div id="scout-list" class="scout-list"></div>
       <div id="scout-result"></div>
     </section>
@@ -209,6 +244,10 @@
             <option value="game" selected>Game time</option>
             <option value="real">Real time (÷1.4)</option>
           </select>
+        </label>
+        <label class="toggle" id="window-chrono-wrap" title="Optimistic — applies chrono to every Protoss-eligible step">
+          <input type="checkbox" id="window-chrono" />
+          <span>Chrono boost (Protoss)</span>
         </label>
       </div>
 
