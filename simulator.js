@@ -253,9 +253,13 @@ const SC2_SIM = (() => {
       }
       if (e.type === 'addon') {
         // A producer can hold at most one addon at a time. If every
-        // instance of the producer already has an addon, this addon
-        // can't be built. (The producer-slot check below also enforces
-        // the more general "one production task at a time" constraint.)
+        // instance of the producer already has (or is in the process of
+        // getting) an addon, this addon can't be built. We must include
+        // in-progress addons because they've already "claimed" their
+        // host producer — without that, two simultaneous Tech Lab + Reactor
+        // commits on a 2-barracks economy would both look feasible at the
+        // same instant, and the renderer would have to stack one on top
+        // of the existing addon.
         const producer = e.producedBy;
         if (!producer) return true;
         const producerCount = this._countOf(producer);
@@ -265,6 +269,7 @@ const SC2_SIM = (() => {
           const ae = SC2_DATA.entities[id];
           if (ae && ae.type === 'addon' && ae.producedBy === producer) {
             existingAddons += this.completed.get(id) || 0;
+            existingAddons += this.in_progress.get(id) || 0;
           }
         }
         if (existingAddons >= producerCount) return false;

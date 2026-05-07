@@ -2679,8 +2679,12 @@
       //   - Swap target side must land on a main lane with no current
       //     addon; the swap mutates that lane's addonForm to swapTo.
       function laneAddonAt(lane, t) {
+        // Sort defensively: addonChanges entries are pushed as intervals
+        // are placed (sorted by start time), but the entries' t values
+        // are END times — not necessarily monotonic when intervals overlap.
+        const sorted = lane.addonChanges.slice().sort((a, b) => a.t - b.t);
         let form = null;
-        for (const ev of lane.addonChanges) {
+        for (const ev of sorted) {
           if (ev.t > t + 1e-9) break;
           form = ev.form;
         }
