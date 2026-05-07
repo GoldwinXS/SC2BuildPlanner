@@ -1560,32 +1560,49 @@
     return i < 0 ? 0 : i;
   }
 
-  // Encode timeline → SALT string. Uses the standard SC2 build-order
-  // convention: time and supply are taken at CLICK time (when the action
-  // is queued), not completion. So `13 Rax` means you clicked Rax at
-  // supply 13 — same convention spawningtool builds use. `name` becomes
-  // the build's title.
-  function encodeSALT(timeline, name) {
+  // Encode timeline → SALT string. Standard SC2 build-order convention:
+  // time and supply are taken at CLICK time (when the action is queued).
+  // Per Veritasimo's SALT.cs reference impl, supply uses an offset of
+  // m_minimumSupply = 5: SALT decodes `displayed = encoded + 4` for
+  // non-zero values (encoded=0 means "blank — no supply shown"). To
+  // round-trip cleanly we encode `supply - 4`. SALT can't represent
+  // supply < 5, but real builds never start that low.
+  const SALT_SUPPLY_MIN = 5;
+  // SALT mod in-game appears to only render the first ~40 build prompts.
+  // Past that the rest are silently dropped from the overlay. Real-world
+  // spawningtool builds rarely list every individual SCV — they list key
+  // actions. Use opts.{omitWorkers, omitArmy} to trim long builds to fit.
+  function encodeSALT(timeline, name, opts = {}) {
     const steps = [];
     const skipped = [];
+    let kept = 0, droppedByFilter = 0;
     for (const t of timeline) {
       // Swaps and other synthetic events have no SALT representation.
       if (!t || !t.id || String(t.id).startsWith('swap_')) continue;
+      const ent = SC2_DATA.entities[t.id];
+      if (ent) {
+        const isWorker = ent.role === 'worker';
+        const isArmy = ent.type === 'unit' && !isWorker;
+        if (opts.omitWorkers && isWorker) { droppedByFilter++; continue; }
+        if (opts.omitArmy && isArmy) { droppedByFilter++; continue; }
+      }
       const map = SALT_ID_TO_CODE[t.id];
       if (!map) {
         skipped.push(t.name || t.id);
         continue;
       }
       const [type, code] = map;
-      const sup = t.resBefore ? Math.round(t.resBefore.supply_used || 0) : 0;
+      const supVal = t.resBefore ? Math.round(t.resBefore.supply_used || 0) : 0;
+      const encodedSupply = supVal > 0 ? Math.max(1, supVal - (SALT_SUPPLY_MIN - 1)) : 0;
       const startSec = Math.max(0, Math.round(t.start || 0));
       const minute = Math.floor(startSec / 60);
       const second = startSec % 60;
-      steps.push(saltChar(sup) + saltChar(minute) + saltChar(second) + saltChar(type) + saltChar(code));
+      steps.push(saltChar(encodedSupply) + saltChar(minute) + saltChar(second) + saltChar(type) + saltChar(code));
+      kept++;
     }
     const title = (name || 'sc2-timings build').replace(/[|~]/g, ' ');
     const header = saltChar(SALT_VERSION) + `${title}|sc2-timings||~`;
-    return { encoded: header + steps.join(''), skipped };
+    return { encoded: header + steps.join(''), skipped, kept, droppedByFilter };
   }
 
   // Decode a SALT string into { name, race, buildOrder, skipped }.
@@ -1608,7 +1625,11 @@
     let race = null;
     let skipped = 0;
     for (let i = 0; i < body.length; i += 5) {
-      const sup = saltIndex(body[i]);
+      // Supply index 0 = "blank" per SALT.cs (no supply shown). For non-zero,
+      // the displayed supply is encoded + 4. We don't need the decoded
+      // supply value for the imported build order itself, but we use the
+      // encoded byte to detect zero-padded entries below.
+      const supEnc = saltIndex(body[i]);
       const min = saltIndex(body[i + 1]);
       const sec = saltIndex(body[i + 2]);
       const type = saltIndex(body[i + 3]);
@@ -1618,9 +1639,8 @@
       const entity = SC2_DATA.entities[id];
       if (!entity) { skipped++; continue; }
       if (!race) race = entity.race;
-      // Suppress meaningless 0-supply/0-time padding entries that sometimes
-      // appear at the end of a SALT string.
-      if (sup === 0 && min === 0 && sec === 0 && i > 0 && type === 0 && code === 0) continue;
+      // Suppress all-zero padding entries that sometimes trail the body.
+      if (supEnc === 0 && min === 0 && sec === 0 && i > 0 && type === 0 && code === 0) continue;
       buildOrder.push({ entityId: id, repeat: 1 });
     }
     if (!race) race = 'terran';
