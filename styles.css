@@ -2264,7 +2264,48 @@ code {
   background: var(--good);
   border-radius: 1px;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+  z-index: 1;
 }
+/* Colored segments by entity kind so a Barracks lane visually distinguishes
+   Marines, Tech Lab, Reactor, etc. Workers get a calmer hue since they
+   dominate CC lanes; combat units use the brightest accent. */
+.prod-util-seg-worker  { background: #4ade80; }  /* green — workers */
+.prod-util-seg-unit    { background: #38bdf8; }  /* blue — combat units */
+.prod-util-seg-addon   { background: #fbbf24; }  /* amber — Tech Lab/Reactor build */
+.prod-util-seg-upgrade { background: #c084fc; }  /* purple — research */
+.prod-util-seg-morph   { background: #facc15; }  /* gold — OC/Lair/Hive morph */
+.prod-util-seg-swap    { background: #fb923c; }  /* orange — addon swap */
+
+/* Idle gap overlays — translucent fills with cause-coded color, layered on
+   top of the avail base but below the busy segments so they only paint
+   stretches where nothing actually queued. Hover for the diagnosis tip. */
+.prod-util-idle {
+  position: absolute;
+  top: 0; bottom: 0;
+  z-index: 0;
+  cursor: help;
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+}
+.prod-util-idle-supply {
+  background: repeating-linear-gradient(135deg,
+    rgba(248, 113, 113, 0.32) 0 6px,
+    rgba(248, 113, 113, 0.10) 6px 12px);
+  border-color: rgba(248, 113, 113, 0.6);
+}
+.prod-util-idle-resources {
+  background: repeating-linear-gradient(135deg,
+    rgba(251, 191, 36, 0.32) 0 6px,
+    rgba(251, 191, 36, 0.10) 6px 12px);
+  border-color: rgba(251, 191, 36, 0.6);
+}
+.prod-util-idle-list-order {
+  background: repeating-linear-gradient(135deg,
+    rgba(148, 163, 184, 0.30) 0 6px,
+    rgba(148, 163, 184, 0.08) 6px 12px);
+  border-color: rgba(148, 163, 184, 0.5);
+}
+.prod-util-idle:hover { filter: brightness(1.4); }
 
 /* Orphan lane — actions that had no eligible producer free in time
    (e.g., a 2nd Orbital Command queued without a 2nd Command Center

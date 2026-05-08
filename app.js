@@ -2890,7 +2890,7 @@
         let threshold;
         if (isResources) threshold = 3;
         else if (isProducer) threshold = Math.max(20, buildTime * 2 + 3);
-        else threshold = 5;
+        else threshold = 3;  // supply / tech — surface early since they almost always indicate a missing prereq
         if (delay > threshold && !(i === 0 && isResources)) {
           const niceWhen = fmtTime(stepResult.wouldFireAt);
           const tip = `Could have fired at ${niceWhen}; blocked by ${stepResult.blockedBy} until ${fmtTime(stepResult.start)}.`;
@@ -3396,16 +3396,29 @@
     // even though the player has minerals usually means a unit/upgrade was
     // listed too far down the build (or not at all). Surface the worst gap
     // per producer so it's clear WHY the timeline has dead space.
-    const idleGaps = detectProducerIdleGaps(producerUtil);
+    const idleGaps = detectProducerIdleGaps(producerUtil, r.sim.history);
     const insightItems = [
       ...floats.map(f => ({
         title: `Floated ${f.peak.toFixed(0)} ${f.label} for ${f.duration.toFixed(0)}s, peaking at ${fmtTime(f.peakAt)}.`,
         body: `📈 Floating ${f.label}: held ${f.peak.toFixed(0)}+ for ${f.duration.toFixed(0)}s starting ${fmtTime(f.start)} — economy outpacing spend.`,
       })),
-      ...idleGaps.map(g => ({
-        title: `${g.producerName} sat idle from ${fmtTime(g.start)} to ${fmtTime(g.end)} — list a unit/upgrade in this window to fill it.`,
-        body: `⏸ Idle ${g.producerName}: ${g.duration.toFixed(0)}s gap starting ${fmtTime(g.start)} — slot free, but nothing listed for it.`,
-      })),
+      ...idleGaps.map(g => {
+        // "supply" cause means the slot was free but supply was at cap,
+        // so no unit could fire from it — fix by adding a Depot/Pylon/
+        // Overlord earlier. "list-order" cause means the slot was just
+        // unused and the user could fill it with another unit/upgrade.
+        const isSupply = g.cause === 'supply';
+        const reason = isSupply
+          ? 'supply blocked during this window'
+          : 'slot free, but nothing listed for it';
+        const fix = isSupply
+          ? 'Add a Supply Depot earlier in the build so the cap rises before this point.'
+          : 'List another unit or upgrade for this producer at this time.';
+        return {
+          title: `${g.producerName} sat idle from ${fmtTime(g.start)} to ${fmtTime(g.end)} — ${reason}. ${fix}`,
+          body: `⏸ Idle ${g.producerName}: ${g.duration.toFixed(0)}s gap starting ${fmtTime(g.start)} — ${reason}.`,
+        };
+      }),
     ];
     const insightsHtml = insightItems.length
       ? `<div class="forge-insights">
@@ -3446,7 +3459,7 @@
         ${warningsHtml}
         ${insightsHtml}
         ${renderRosterGrid(roster)}
-        ${renderProducerUtilization(producerUtil, r.eft)}
+        ${renderProducerUtilization(producerUtil, r.eft, r.sim.history, r.timeline)}
         <div class="path-section collapsible-section" data-section-id="forge-resources">
           <h3>Resources over time</h3>
           ${renderResourceChart(r.sim.history, r.eft)}
@@ -3864,7 +3877,97 @@
 
   function isProducerFlagged(u) { return u.idlePct > 0.20 && u.idleSec > 10; }
 
-  function renderProducerUtilization(util, eft) {
+  // Pick a CSS class per timeline-entry kind so the Gantt visually
+  // distinguishes Unit / Addon / Upgrade / Morph at a glance. Useful when
+  // scanning a Barracks lane that mixes Marines, Tech Lab, Reactor, etc.
+  function prodSegKindClass(iv) {
+    if (iv.kind === 'swap') return 'prod-util-seg-swap';
+    const e = SC2_DATA.entities[iv.id];
+    if (!e) return '';
+    if (e.type === 'addon') return 'prod-util-seg-addon';
+    if (e.type === 'upgrade') return 'prod-util-seg-upgrade';
+    if (e.upgradeFrom) return 'prod-util-seg-morph';
+    if (e.type === 'unit' && e.role === 'worker') return 'prod-util-seg-worker';
+    if (e.type === 'unit') return 'prod-util-seg-unit';
+    return '';
+  }
+
+  // Diagnose why a Gantt lane sat idle for a given window. Used by the
+  // hover tooltip on idle segments. Resolution priority:
+  //   1. Supply was at cap during the window → fix is a Depot/Pylon/Overlord.
+  //   2. Resources insufficient for the next listed step → fix is moving
+  //      that step later or trimming a recent expense.
+  //   3. Tech for the next listed step wasn't built yet.
+  //   4. Otherwise: "no step listed for this producer in this window" —
+  //      the slot was free and ready, the build just didn't fill it.
+  function diagnoseIdleGap(start, end, history, producerId, timeline) {
+    // Supply check — sample history within the window.
+    if (Array.isArray(history)) {
+      for (const h of history) {
+        if (h.t < start - 1e-6) continue;
+        if (h.t > end + 1e-6) break;
+        if (h.supply_used >= h.supply_max) {
+          return {
+            cause: 'supply',
+            text: `Supply blocked (${h.supply_used}/${h.supply_max}) — add a Supply Depot earlier so the cap rises before this point.`,
+          };
+        }
+      }
+    }
+
+    // Find the next-fired timeline entry that uses this producer pool.
+    // Useful for "what would have filled this slot" — if the next entry
+    // is much later (i.e., the build genuinely had nothing here), call
+    // out the gap as list-order. If it's right after the gap, that's
+    // exactly what the simulator chose.
+    let nextForProd = null;
+    if (Array.isArray(timeline)) {
+      const ordered = timeline.slice().sort((a, b) => a.start - b.start);
+      for (const t of ordered) {
+        if (t.start < end - 1e-6) continue;
+        const e = SC2_DATA.entities[t.id];
+        const pool = e && (e.upgradeFrom || e.producedBy);
+        if (pool && rootOf(pool) === producerId) { nextForProd = t; break; }
+      }
+    }
+
+    // Resource check — sample minerals/gas at the start of the window
+    // and compare to the next pending step's cost. This is a heuristic;
+    // the simulator's affordability-walk is the source of truth.
+    if (nextForProd && Array.isArray(history) && history.length) {
+      let snap = null;
+      for (const h of history) {
+        if (h.t > start + 1e-6) break;
+        snap = h;
+      }
+      const e = SC2_DATA.entities[nextForProd.id];
+      if (snap && e) {
+        const mNeed = e.minerals || 0, gNeed = e.gas || 0;
+        if ((snap.minerals < mNeed - 1) || (snap.gas < gNeed - 1)) {
+          const lacking = [];
+          if (snap.minerals < mNeed - 1) lacking.push(`${Math.round(snap.minerals)}/${mNeed}m`);
+          if (snap.gas < gNeed - 1) lacking.push(`${Math.round(snap.gas)}/${gNeed}g`);
+          return {
+            cause: 'resources',
+            text: `Saving for ${e.name} (${lacking.join(', ')}) — bank wasn't full when slot freed.`,
+          };
+        }
+      }
+    }
+
+    if (nextForProd) {
+      return {
+        cause: 'list-order',
+        text: `Next listed for this producer: ${nextForProd.name} at ${fmtTime(nextForProd.start)}. Slot was free, but nothing was queued in this window.`,
+      };
+    }
+    return {
+      cause: 'list-order',
+      text: `Slot was free, but nothing was listed for this producer in this window.`,
+    };
+  }
+
+  function renderProducerUtilization(util, eft, history, timeline) {
     if (!util.length || !eft) return '';
     const flaggedCount = util.filter(isProducerFlagged).length;
     const heading = flaggedCount
@@ -3883,22 +3986,57 @@
       if (u.buildingCount > 1) labelParts.push(`×${u.buildingCount}`);
       if (u.reactorCount > 0) labelParts.push(u.reactorCount > 1 ? `+${u.reactorCount} reactors` : '+reactor');
       const slotsLabel = labelParts.join(' ');
+      const producerId = u.producer.id;
       const tracks = u.lanes.map(lane => {
         const isOrphan = lane.type === 'orphan';
         const aliveEnd = Math.min(lane.tDeath === Infinity ? eft : lane.tDeath, eft);
         const availLeft = pct(lane.tAvail);
         const availWidth = Math.max(0, pct(aliveEnd) - availLeft);
-        const segs = lane.intervals.map(iv => {
+        const sortedIntervals = lane.intervals.slice().sort((a, b) => a.start - b.start);
+        const segs = sortedIntervals.map(iv => {
           const left = pct(iv.start);
           const width = Math.max(0.4, pct(iv.end) - left);
           const tipNote = isOrphan ? ' · ⚠ no eligible producer was free at this time' : '';
+          const kindClass = prodSegKindClass(iv);
           const t = `${iv.name} · ${fmtTime(iv.start)} → ${fmtTime(iv.end)} (${fmtTime(iv.end - iv.start)})${tipNote}`;
-          return `<div class="prod-util-seg${isOrphan ? ' prod-util-seg-orphan' : ''}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${t}"></div>`;
+          return `<div class="prod-util-seg${isOrphan ? ' prod-util-seg-orphan' : ''}${kindClass ? ' ' + kindClass : ''}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${t}"></div>`;
         }).join('');
+        // Idle segments — the gaps where the lane is alive but nothing
+        // was scheduled. Each gets a hover tooltip with cause analysis,
+        // so the user can tell at a glance whether they're supply-blocked,
+        // saving for the next thing, or just have a hole in the build.
+        let idleSegs = '';
+        if (!isOrphan) {
+          const MIN_IDLE = 4;  // sec — below this, the gap is cycle slop
+          let cursor = lane.tAvail;
+          for (const iv of sortedIntervals) {
+            if (iv.start > cursor + MIN_IDLE) {
+              const diag = diagnoseIdleGap(cursor, iv.start, history, producerId, timeline);
+              const left = pct(cursor);
+              const width = Math.max(0.4, pct(iv.start) - left);
+              const dur = (iv.start - cursor).toFixed(1);
+              const tip = `Idle ${dur}s · ${fmtTime(cursor)} → ${fmtTime(iv.start)}\n${diag.text}`;
+              idleSegs += `<div class="prod-util-idle prod-util-idle-${diag.cause}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${tip}"></div>`;
+            }
+            cursor = Math.max(cursor, iv.end);
+          }
+          // Trailing-idle: only flag if it's a meaningful chunk before the
+          // build actually ends, so an at-end "the build is over" gap
+          // doesn't fire as a problem.
+          if (aliveEnd - cursor > MIN_IDLE * 3 && cursor < eft - MIN_IDLE * 3) {
+            const diag = diagnoseIdleGap(cursor, aliveEnd, history, producerId, timeline);
+            const left = pct(cursor);
+            const width = Math.max(0.4, pct(aliveEnd) - left);
+            const dur = (aliveEnd - cursor).toFixed(1);
+            const tip = `Idle ${dur}s · ${fmtTime(cursor)} → ${fmtTime(aliveEnd)}\n${diag.text}`;
+            idleSegs += `<div class="prod-util-idle prod-util-idle-${diag.cause}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${tip}"></div>`;
+          }
+        }
         return `
           <div class="prod-util-track${isOrphan ? ' prod-util-track-orphan' : ''}"${isOrphan ? ' title="These actions had no eligible producer ready at their start time — usually a missing or not-yet-built upgrade source"' : ''}>
             ${isOrphan ? '<span class="prod-util-orphan-label">⚠ unassigned</span>' : ''}
             ${availWidth > 0 && !isOrphan ? `<div class="prod-util-avail" style="left:${availLeft.toFixed(2)}%;width:${availWidth.toFixed(2)}%"></div>` : ''}
+            ${idleSegs}
             ${segs}
           </div>
         `;
@@ -3929,9 +4067,14 @@
 
     const legend = `
       <div class="prod-util-legend">
-        <span><i class="prod-util-key busy"></i>producing</span>
-        <span><i class="prod-util-key idle"></i>idle (slot available, nothing queued)</span>
-        <span><i class="prod-util-key offline"></i>not built yet</span>
+        <span><i class="prod-util-key prod-util-seg-worker"></i>workers</span>
+        <span><i class="prod-util-key prod-util-seg-unit"></i>combat units</span>
+        <span><i class="prod-util-key prod-util-seg-addon"></i>addon build</span>
+        <span><i class="prod-util-key prod-util-seg-upgrade"></i>upgrade</span>
+        <span><i class="prod-util-key prod-util-seg-morph"></i>morph</span>
+        <span><i class="prod-util-key prod-util-idle-supply"></i>idle (supply blocked)</span>
+        <span><i class="prod-util-key prod-util-idle-resources"></i>idle (saving for next)</span>
+        <span><i class="prod-util-key prod-util-idle-list-order"></i>idle (no step listed)</span>
       </div>
     `;
 
@@ -3966,22 +4109,41 @@
   // intervals. A "gap" is a stretch where the lane is alive (between
   // tAvail and tDeath) but has nothing scheduled — the slot was free
   // and the player COULD have queued something, but the build order
-  // didn't list anything for it. Surface only the worst gap per producer
-  // so the insight list stays actionable.
-  function detectProducerIdleGaps(producerUtil) {
+  // didn't list anything for it. Each gap is annotated with the most
+  // likely cause (supply cap during the window, otherwise list-order)
+  // so the user can diagnose without scanning the chart manually.
+  function detectProducerIdleGaps(producerUtil, history) {
     if (!Array.isArray(producerUtil)) return [];
     const out = [];
     const MIN_GAP = 15; // seconds — short gaps are usually unavoidable cycle slop
+
+    // Pre-extract supply samples for fast cause-detection. A gap is "supply
+    // blocked" if at any point during it supply_used >= supply_max.
+    const supplySamples = (history || [])
+      .map(h => ({ t: h.t, used: h.supply_used, max: h.supply_max }))
+      .sort((a, b) => a.t - b.t);
+    function supplyBlockedDuring(start, end) {
+      for (const s of supplySamples) {
+        if (s.t < start - 1e-6) continue;
+        if (s.t > end + 1e-6) break;
+        if (s.used >= s.max) return true;
+      }
+      return false;
+    }
+
     for (const u of producerUtil) {
-      let worst = null;
+      // Collect every gap from every lane (e.g. each Barracks instance) so
+      // a producer with multiple lanes shows distinct stalls rather than
+      // hiding all but the worst.
+      const gaps = [];
       for (const lane of u.lanes || []) {
         const intervals = (lane.intervals || []).slice().sort((a, b) => a.start - b.start);
         let cursor = lane.tAvail;
         for (const iv of intervals) {
           if (iv.start > cursor + 1e-6) {
             const gap = iv.start - cursor;
-            if (gap >= MIN_GAP && (!worst || gap > worst.duration)) {
-              worst = { duration: gap, start: cursor, end: iv.start };
+            if (gap >= MIN_GAP) {
+              gaps.push({ duration: gap, start: cursor, end: iv.start });
             }
           }
           cursor = Math.max(cursor, iv.end);
@@ -3990,12 +4152,18 @@
         // the build is usually expected (the build is done) and noisy to
         // surface as "fix this".
       }
-      if (worst) {
+      // Cap the count per producer so a build with one massively under-used
+      // structure doesn't drown the insights panel. Three is enough to
+      // diagnose, more is noise.
+      gaps.sort((a, b) => b.duration - a.duration);
+      for (const g of gaps.slice(0, 3)) {
+        const supplyBlocked = supplyBlockedDuring(g.start, g.end);
         out.push({
           producerName: u.producer.name,
-          duration: worst.duration,
-          start: worst.start,
-          end: worst.end,
+          duration: g.duration,
+          start: g.start,
+          end: g.end,
+          cause: supplyBlocked ? 'supply' : 'list-order',
         });
       }
     }
