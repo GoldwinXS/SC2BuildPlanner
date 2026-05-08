@@ -82,6 +82,44 @@
       <div class="panel-head">
         <h2>Build Forge</h2>
         <p>Compose a build order step-by-step. The simulator runs your exact list — no greedy planner — so you can see precisely when each action lands, what blocks it, and how decisions cascade.</p>
+        <details class="forge-howto">
+          <summary>How it works · how to use it</summary>
+          <div class="forge-howto-body">
+            <h4>How the simulator runs your build</h4>
+            <p>Each step is assigned a <strong>producer pool</strong> — the structure that ties up its slot:</p>
+            <ul>
+              <li><strong>Workers</strong> (SCV / Probe / Drone) → CC / Nexus / Hatchery pool.</li>
+              <li><strong>Combat units</strong> → their producing structure (Marine → Barracks pool).</li>
+              <li><strong>Addons, upgrades, morphs</strong> (Tech Lab, Stim, Orbital Command…) → host structure pool.</li>
+              <li><strong>Worker-built buildings</strong> (Depot, Pylon, Barracks, Refinery…) → no pool.</li>
+            </ul>
+            <p>List order is enforced two ways:</p>
+            <ul>
+              <li><strong>Within a pool</strong>: steps fire in the exact order you listed them. Listing <em>Marine, Tech Lab, Marine</em> guarantees the Tech Lab fires between the two Marines on that Barracks.</li>
+              <li><strong>Worker-built buildings</strong>: each one waits for the immediately preceding step. Move a Depot up the list to fire it earlier; move it down to fire it later.</li>
+              <li><strong>Cross-pool</strong>: independent. Marines from Barracks fire in parallel with SCVs from CCs — different hotkeys, different queues.</li>
+            </ul>
+            <p>At every iteration the simulator picks the candidate that can fire <strong>earliest in real time</strong> (chronological order), respecting tech / supply / producer-slot / resource constraints. If the build deadlocks (e.g. a Marine listed before its Barracks), it falls back to the earliest fireable step out of order so the build keeps progressing — you'll see a warning when this happens.</p>
+
+            <h4>Reading the output</h4>
+            <ul>
+              <li><strong>Build list</strong> shows each step's start time, bank state, and any <code>⏳ Delayed</code> badge explaining why it didn't fire sooner (resources / supply / producer / tech).</li>
+              <li><strong>Insights</strong> panel highlights floating minerals/gas (income outpacing spend) and idle producers (a Barracks sat unused while you had minerals — usually means you should list more units in that window).</li>
+              <li><strong>Production efficiency</strong> Gantt shows each producer lane's busy/idle split. Aim for &lt;10% idle on Barracks/Factory/Starport once they're up.</li>
+            </ul>
+
+            <h4>Tips for getting the timing you want</h4>
+            <ul>
+              <li>If a Depot fires too early, drag it lower in the list. If it fires too late and you're getting supply-blocked, drag it up.</li>
+              <li>If a producer is idle, list more same-pool units in that window. The simulator won't invent units to fill gaps — only what you list runs.</li>
+              <li>If a unit fires "before" its tech in your list, the simulator auto-corrects (the tech building runs first) but you'll see a warning. Reorder for clarity.</li>
+              <li>Adding an SCV before a key building costs 50m and can delay the building. The bank shown at click time tells you exactly what's available.</li>
+            </ul>
+
+            <h4>What's <em>not</em> modeled</h4>
+            <p>Worker travel time, Pylon power radius, Creep spread, larva-bank limits, and chrono-boost timing on individual units. Faster ladder speed (×1.4) is applied to all build times.</p>
+          </div>
+        </details>
       </div>
 
       <div class="controls-row">
@@ -161,6 +199,10 @@
           <div class="forge-section-divider">
             <h3 class="forge-section-title">Build Order</h3>
             <span class="forge-section-count" id="forge-list-count">0 steps</span>
+            <button type="button" class="forge-list-density-toggle" id="forge-list-compact-toggle" title="Toggle compact / comfortable build-list rows">
+              <span class="density-icon density-icon-comfy">≡</span>
+              <span class="density-icon density-icon-compact">═</span>
+            </button>
           </div>
 
           <div id="forge-list" class="forge-list"></div>

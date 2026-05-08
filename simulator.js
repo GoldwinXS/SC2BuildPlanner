@@ -382,6 +382,40 @@ const SC2_SIM = (() => {
       };
     }
 
+    // Shallow-copy of all mutable sim state. Used by simulateBuildOrder to
+    // "peek" each candidate's fire time without committing — we clone, walk
+    // the clone, and read off its sim.t. Plain numbers are copied by value;
+    // Maps and arrays are duplicated one level deep (event/timeline entries
+    // are copied since advanceTo mutates them via splice/shift).
+    clone() {
+      const c = Object.create(Sim.prototype);
+      c.race = this.race;
+      c.cfg = this.cfg;
+      c.opts = this.opts;
+      c.t = this.t;
+      c.minerals = this.minerals;
+      c.gas = this.gas;
+      c.supply_used = this.supply_used;
+      c.supply_max = this.supply_max;
+      c.mineral_workers = this.mineral_workers;
+      c.gas_workers = this.gas_workers;
+      c.gas_capacity = this.gas_capacity;
+      c.live_workers = this.live_workers;
+      c.completed = new Map(this.completed);
+      c.producer_slots = new Map();
+      for (const [k, v] of this.producer_slots) {
+        c.producer_slots.set(k, v.map(s => ({ ...s })));
+      }
+      c.in_progress = new Map(this.in_progress);
+      c.active_mules = this.active_mules;
+      c.larvae = this.larvae;
+      c.timeline = this.timeline.slice();
+      c.events = this.events.map(e => ({ ...e }));
+      c.log = [];
+      c.history = [];
+      return c;
+    }
+
     queue(entityId) {
       const e = SC2_DATA.entities[entityId];
       if (!this.canQueue(e)) return { success: false };
@@ -703,69 +737,38 @@ const SC2_SIM = (() => {
   }
 
   // ============================================================
-  // Build-order driven simulation (parallel, constraint-based)
+  // Build-order driven simulation (chronological, per-pool ordering)
   // ============================================================
-  // Each step commits at its OWN earliest feasible time given every other
-  // step's current commitment. User-listed order matters only as resource
-  // priority — earlier-listed steps claim contested minerals/gas/slots
-  // first because they probe first in each pass.
+  // Each step is assigned a "producer pool":
+  //   - Units (workers, combat units): pool = the structure that builds them
+  //     (CC for SCV, Barracks for Marine/Reaper, Hatchery for any larva-unit,
+  //      etc.). List order is preserved WITHIN a pool only — listing 6
+  //     Marines after your last SCV doesn't push later SCVs back, because
+  //     SCVs come from a different pool.
+  //   - Buildings, addons, morphs, upgrades, swaps: no pool. They keep
+  //     STRICT list order against everything before them. This protects
+  //     the user's intent for timing-sensitive actions like depots — a
+  //     depot listed at supply 17 still waits for the SCVs before it.
   //
-  // Algorithm:
-  //   1. Probe every step against a probe sim that walks from t=0 forward,
-  //      applying other steps' current commit times only when sim.t reaches
-  //      them. Record this step's earliest queueable moment as its commit.
-  //   2. Adding or shifting one commit can retroactively change another's
-  //      feasibility (e.g., a later-listed SCV firing at t=12 consumes
-  //      minerals that a Supply Depot at t=13.76 was counting on). So we
-  //      re-probe every step in subsequent passes until no commit changes.
-  //   3. Replay all committed steps in time order onto a final sim to
-  //      produce the timeline, log, and history.
+  // Algorithm: at each iteration, find every unplaced step whose
+  // predecessors are all placed; clone the live sim and peek the
+  // earliest fire time for each candidate; commit the candidate with
+  // the smallest peek time (ties broken by original list index). This
+  // produces a chronologically-correct timeline where independent
+  // pools fire in parallel.
   function simulateBuildOrder(buildOrder, opts = {}) {
     const race = opts.race || 'terran';
     const warnings = [];
 
-    // Walk the build order and pre-compute, for each user-list position,
-    // its priority "phase" and effective tier order. A `kind: 'priority'`
-    // step doesn't itself produce anything — it's a marker that flips the
-    // resource priority for everything listed AFTER it. Phases form hard
-    // boundaries: every phase-N step probes before any phase-(N+1) step,
-    // regardless of tier.
-    const VALID_TIERS = ['worker', 'building', 'tech', 'army'];
-    function sanitizeTierOrder(arr) {
-      if (!Array.isArray(arr)) return null;
-      const seen = new Set(), out = [];
-      for (const v of arr) if (VALID_TIERS.includes(v) && !seen.has(v)) { seen.add(v); out.push(v); }
-      if (!out.length) return null;
-      for (const v of VALID_TIERS) if (!seen.has(v)) out.push(v);
-      return out;
-    }
-    const defaultPriorityOrder = sanitizeTierOrder(opts.priorityOrder) || ['worker', 'building', 'tech', 'army'];
-    const phaseByBuildIdx = new Array(buildOrder.length);
-    const orderByBuildIdx = new Array(buildOrder.length);
-    {
-      let curPhase = 0, curOrder = defaultPriorityOrder;
-      for (let i = 0; i < buildOrder.length; i++) {
-        if (buildOrder[i] && buildOrder[i].kind === 'priority') {
-          curPhase++;
-          curOrder = sanitizeTierOrder(buildOrder[i].order) || curOrder;
-        }
-        phaseByBuildIdx[i] = curPhase;
-        orderByBuildIdx[i] = curOrder;
-      }
-    }
-
     // Flatten the build order, expanding repeats into individual steps.
-    // Priority markers are NOT added to steps[] — they only affect ordering
-    // metadata via phaseByBuildIdx / orderByBuildIdx.
+    // Priority markers are skipped (kept for forward compatibility).
     const steps = [];
     for (let i = 0; i < buildOrder.length; i++) {
       const action = buildOrder[i];
-      if (action && action.kind === 'priority') continue;
+      if (!action) continue;
+      if (action.kind === 'priority') continue;
       if (action.kind === 'swap') {
-        steps.push({
-          kind: 'swap', from: action.from, to: action.to,
-          originalIndex: i, commitTime: null, lastReason: null,
-        });
+        steps.push({ kind: 'swap', from: action.from, to: action.to, originalIndex: i });
         continue;
       }
       const entity = SC2_DATA.entities[action.entityId];
@@ -779,150 +782,159 @@ const SC2_SIM = (() => {
       }
       const repeat = Math.max(1, Math.min(50, action.repeat || 1));
       for (let r = 0; r < repeat; r++) {
-        steps.push({
-          entityId: action.entityId,
-          originalIndex: i, commitTime: null, lastReason: null,
-        });
+        steps.push({ entityId: action.entityId, originalIndex: i });
       }
     }
 
-    // Convert a step into the {kind/entityId/from/to/startTime/originalIndex}
-    // shape that the probe and replay functions expect.
-    function asCommit(s) {
-      return {
-        kind: s.kind, entityId: s.entityId, from: s.from, to: s.to,
-        startTime: s.commitTime, originalIndex: s.originalIndex,
-        blockedBy: s.blockedBy, wouldFireAt: s.wouldFireAt,
-      };
-    }
-
-    // Compute, for each step, the set of step indices that should be
-    // temporally ordered before it (the "before-set"). The order constraint
-    // is then: a step's commit time must be >= the max commit time of all
-    // committed non-swap steps in its before-set.
-    //
-    // Step S is in T's before-set iff:
-    //   - S is a transitive tech dependency of T (S must finish for T to
-    //     even be queueable — this is a hard ordering), OR
-    //   - S is listed before T in the user build AND T is NOT a tech dep
-    //     of S (the user's listing order is a soft preference; we honor
-    //     it unless honoring it would invert a hard tech ordering).
-    //
-    // Swaps are fully exempt: never in a before-set, never have one. A
-    // swap's commit time is purely its probe earliest — moving a swap
-    // up or down in the list doesn't perturb anything else.
-    //
-    // Without this dep-aware rule, a build like [Marine, Depot, Barracks]
-    // creates a cycle: list-order says Marine-before-Depot-before-Barracks,
-    // but tech says Depot-before-Barracks-before-Marine, and naive list-
-    // order constraints would push every commit later in each iteration,
-    // diverging.
-    const beforeSets = computeBeforeSets(steps);
-
-    // Resource-priority iteration order. Each step uses the effective
-    // tier order at its user-list position (defaultPriorityOrder, mutated
-    // by any priority-markers earlier in the list). The sort is
-    //   (phase, tier rank in step's effective order, gas desc, list idx).
-    // Phase comes first because it forms a hard boundary — all phase-1
-    // commits land before any phase-2 work probes, so a "switch to army
-    // priority" marker mid-build means the army units in phase 2 take
-    // precedence over later workers without affecting earlier-phase
-    // commits.
-    function categorize(step) {
-      if (step.kind === 'swap') return 'swap';
-      if (!step.entityId) return 'army';
+    // Pool key: the producing structure that this step ties up.
+    //   - Units: producedBy (CC for SCV, Barracks for Marine, Hatchery
+    //     for any larva-unit, etc.).
+    //   - Addons (Tech Lab, Reactor): producedBy = host structure. Tech
+    //     Lab competes with Marines for the Barracks slot.
+    //   - Upgrades (Stim, +1, Conc Shells): producedBy = research building.
+    //   - Morphs (Orbital Command, Lair, Hive, Planetary Fortress): the
+    //     upgradeFrom structure. Morphing CC→OC ties up the CC like an SCV.
+    //   - Plain worker-built buildings (Depot, Barracks, Refinery, Pylon):
+    //     no pool. They keep strict list order via the i-1 fallback below.
+    // Pool ordering means listing [Marine, Tech Lab, Marine] preserves the
+    // sequence — Tech Lab fires after Marine #1 and before Marine #2,
+    // matching the player's actual click sequence into one Barracks slot.
+    function poolKeyOf(step) {
+      if (step.kind === 'swap') return null;
       const e = SC2_DATA.entities[step.entityId];
-      if (!e) return 'army';
-      if (e.role === 'worker') return 'worker';
-      if (e.type === 'building') return 'building';
-      if (e.type === 'addon' || e.type === 'upgrade') return 'tech';
-      return 'army';
+      if (!e) return null;
+      if (e.upgradeFrom) return e.upgradeFrom;
+      if (e.producedBy) return e.producedBy;
+      return null;
     }
-    const sortedIndices = steps.map((_, i) => i).sort((a, b) => {
-      const sa = steps[a], sb = steps[b];
-      const pa = phaseByBuildIdx[sa.originalIndex] || 0;
-      const pb = phaseByBuildIdx[sb.originalIndex] || 0;
-      if (pa !== pb) return pa - pb;
-      const orderForA = orderByBuildIdx[sa.originalIndex] || defaultPriorityOrder;
-      const ca = categorize(sa);
-      const cb = categorize(sb);
-      const ra = orderForA.indexOf(ca);
-      const rb = orderForA.indexOf(cb);
-      const raSafe = ra < 0 ? 99 : ra;
-      const rbSafe = rb < 0 ? 99 : rb;
-      if (raSafe !== rbSafe) return raSafe - rbSafe;
-      const ga = sa.entityId ? (SC2_DATA.entities[sa.entityId]?.gas || 0) : 0;
-      const gb = sb.entityId ? (SC2_DATA.entities[sb.entityId]?.gas || 0) : 0;
-      if (ga !== gb) return gb - ga; // gas descending
-      return a - b; // user-list position (within steps[])
-    });
 
-    // Fixed-point iteration. Cap at 2N + 10 to bound worst-case oscillation
-    // (which shouldn't happen with the dep-aware before-sets above, but the
-    // cap is cheap insurance).
-    const maxPasses = steps.length * 2 + 10;
-    for (let pass = 0; pass < maxPasses; pass++) {
-      let changed = false;
-      for (const i of sortedIndices) {
-        const step = steps[i];
-        const others = [];
-        for (let j = 0; j < steps.length; j++) {
-          if (j !== i && steps[j].commitTime !== null) others.push(asCommit(steps[j]));
+    // Predecessors: indices of steps that must be placed before this one.
+    //   - Unit steps: the previous step (if any) sharing the same pool.
+    //     Cross-pool units (e.g. SCVs vs Marines) are independent — the
+    //     player effectively presses both hotkeys in parallel, so each
+    //     pool advances at its own production cadence.
+    //   - Non-unit steps: the immediate prior step (i-1), regardless of
+    //     type. This preserves the user's intent for timing-sensitive
+    //     actions: a Depot listed at position N fires only after step
+    //     N-1 has fired, so moving a Depot down the list pushes its
+    //     fire time later (e.g. supply 22 instead of supply 14).
+    //
+    // Tech/supply/resource constraints are enforced by walkUntilQueueable.
+    for (let i = 0; i < steps.length; i++) {
+      steps[i].pool = poolKeyOf(steps[i]);
+      const preds = new Set();
+      if (steps[i].pool != null) {
+        for (let j = i - 1; j >= 0; j--) {
+          if (steps[j].pool === steps[i].pool) { preds.add(j); break; }
         }
-        let lowerBound = 0;
-        if (step.kind !== 'swap') {
-          for (const j of beforeSets[i]) {
-            if (steps[j].commitTime !== null && steps[j].commitTime > lowerBound) {
-              lowerBound = steps[j].commitTime;
-            }
+      } else if (i > 0) {
+        preds.add(i - 1);
+      }
+      steps[i].preds = preds;
+    }
+
+    const sim = new Sim(race, opts);
+    const placed = new Array(steps.length).fill(false);
+    const failed = new Array(steps.length).fill(false);
+
+    // Chronological placement loop. Each iteration: find every candidate
+    // whose preds are placed, peek each candidate's fire time on a clone
+    // of the live sim, commit the earliest one.
+    let safety = 0;
+    while (safety++ < steps.length * 10 + 50) {
+      const candidates = [];
+      for (let i = 0; i < steps.length; i++) {
+        if (placed[i] || failed[i]) continue;
+        let predsOk = true;
+        for (const p of steps[i].preds) {
+          if (failed[p]) { failed[i] = true; predsOk = false; break; }
+          if (!placed[p]) { predsOk = false; break; }
+        }
+        if (predsOk) candidates.push(i);
+      }
+      if (candidates.length === 0) break;
+
+      let bestIdx = -1;
+      let bestTime = Infinity;
+      let bestResult = null;
+      for (const i of candidates) {
+        const peeked = peekStep(sim, steps[i]);
+        if (!peeked.ok) continue;
+        const tieIdx = bestIdx >= 0 ? steps[bestIdx].originalIndex : Infinity;
+        if (peeked.time < bestTime
+            || (peeked.time === bestTime && steps[i].originalIndex < tieIdx)) {
+          bestIdx = i;
+          bestTime = peeked.time;
+          bestResult = peeked;
+        }
+      }
+
+      if (bestIdx === -1) {
+        // Deadlock: no pred-satisfied candidate is solvable. Common cases:
+        //   - Supply blocked but a Depot is listed later (its pred is the
+        //     blocked step → it's not a normal candidate)
+        //   - A unit was listed before its tech building (Marine before
+        //     Barracks), so the unit's tech check fails forever
+        // Fall back to ANY unplaced step that can fire, bypassing strict
+        // list-order so the build keeps progressing.
+        for (let i = 0; i < steps.length; i++) {
+          if (placed[i] || failed[i]) continue;
+          const peeked = peekStep(sim, steps[i]);
+          if (!peeked.ok) continue;
+          const tieIdx = bestIdx >= 0 ? steps[bestIdx].originalIndex : Infinity;
+          if (peeked.time < bestTime
+              || (peeked.time === bestTime && steps[i].originalIndex < tieIdx)) {
+            bestIdx = i;
+            bestTime = peeked.time;
+            bestResult = peeked;
           }
         }
-        const result = step.kind === 'swap'
-          ? findEarliestForSwap(others, step, opts, race)
-          : findEarliestForEntity(others, step.entityId, opts, race, lowerBound);
-        // Track the latest failure reason regardless of whether the time
-        // moved — convergence is decided by time alone.
-        step.lastReason = result.reason || null;
-        step.blockedBy = result.blockedBy || null;
-        step.wouldFireAt = result.wouldFireAt != null ? result.wouldFireAt : null;
-        if (result.time !== step.commitTime) {
-          step.commitTime = result.time;
-          changed = true;
+      }
+
+      if (bestIdx === -1) {
+        // Truly unsolvable — every unplaced step fails. Mark candidates
+        // failed with their reasons; non-candidate unplaced steps will
+        // cascade-fail via the predsOk loop next iteration.
+        for (const i of candidates) {
+          const peeked = peekStep(sim, steps[i]);
+          const step = steps[i];
+          const name = step.kind === 'swap'
+            ? `swap ${step.from} → ${step.to}`
+            : (SC2_DATA.entities[step.entityId]?.name || step.entityId);
+          warnings.push({ index: step.originalIndex, msg: `${name}: ${peeked.reason || 'unsolvable'}` });
+          failed[i] = true;
+        }
+        continue;
+      }
+
+      // Commit on the live sim. advanceTo never goes backward (sim.t is
+      // monotonic across the loop), but bestTime is necessarily ≥ sim.t
+      // because peekStep starts from the live sim's current time.
+      const step = steps[bestIdx];
+      if (sim.t < bestTime) sim.advanceTo(bestTime);
+      if (step.kind === 'swap') {
+        applySwap(sim, step.from, step.to);
+      } else {
+        const before = sim.timeline.length;
+        sim.queue(step.entityId);
+        if (sim.timeline.length > before && (bestResult.blockedBy || bestResult.wouldFireAt != null)) {
+          const entry = sim.timeline[sim.timeline.length - 1];
+          entry.blockedBy = bestResult.blockedBy;
+          entry.wouldFireAt = bestResult.wouldFireAt;
         }
       }
-      if (!changed) break;
+      placed[bestIdx] = true;
     }
-
-    // Anything still uncommitted at the fixed point is unsolvable.
-    for (const s of steps) {
-      if (s.commitTime === null) {
-        const name = s.kind === 'swap'
-          ? `swap ${s.from} → ${s.to}`
-          : (SC2_DATA.entities[s.entityId]?.name || s.entityId);
-        warnings.push({ index: s.originalIndex, msg: `${name}: ${s.lastReason || 'unsolvable'}` });
-      }
-    }
-
-    const committed = steps.filter(s => s.commitTime !== null).map(asCommit);
-
-    // Build the final sim by replaying committed steps in time order.
-    const sim = new Sim(race, opts);
-    replayCommitted(sim, committed);
 
     // Drain remaining events so completion times land in history/log,
     // but ONLY up to the latest action's end time. MULE drop events keep
-    // chaining themselves into the future (one every ~89s, forever as
-    // long as an OC exists), so without a cap the drain loop walks for
-    // hours of game time and the resource history balloons into millions
-    // of minerals.
-    const drainUntil = committed.reduce((m, c) => {
-      if (c.kind === 'swap') return Math.max(m, c.startTime + 5);
-      const e = SC2_DATA.entities[c.entityId];
-      return Math.max(m, c.startTime + (e?.buildTime || 0));
-    }, 0);
-    let safety = 0;
-    while (sim.events.length && safety < 5000) {
-      safety++;
+    // chaining themselves into the future, so without a cap the drain
+    // loop would walk for hours of game time.
+    const drainUntil = sim.timeline.length
+      ? Math.max(...sim.timeline.map(t => t.end))
+      : sim.t;
+    let drainSafety = 0;
+    while (sim.events.length && drainSafety++ < 5000) {
       const t = sim.nextEventTime();
       if (t === Infinity || t > drainUntil + 0.5) break;
       sim.advanceTo(t + 0.001);
@@ -934,144 +946,121 @@ const SC2_SIM = (() => {
     return { sim, timeline, log: sim.log, warnings, eft };
   }
 
-  // For each step, compute the set of step indices that should be ordered
-  // temporally before it. See the comment in simulateBuildOrder for the
-  // exact rule. Swaps neither appear in nor have a before-set.
-  function computeBeforeSets(steps) {
-    // Map entity id -> indices of steps that produce it (for resolving
-    // tech-prereq names to step indices).
-    const idToIndices = new Map();
-    for (let i = 0; i < steps.length; i++) {
-      const s = steps[i];
-      if (s.entityId) {
-        const arr = idToIndices.get(s.entityId) || [];
-        arr.push(i);
-        idToIndices.set(s.entityId, arr);
-      }
+  // Peek the earliest fire time of a step against a clone of the live
+  // sim. Returns { ok, time, blockedBy, wouldFireAt, reason } so we can
+  // pick the chronologically-earliest candidate without mutating live
+  // sim state.
+  function peekStep(liveSim, step) {
+    const clone = liveSim.clone();
+    if (step.kind === 'swap') {
+      const r = walkUntilSwap(clone, step.from, step.to);
+      return r.ok ? { ok: true, time: clone.t } : { ok: false, reason: r.reason };
     }
-
-    // Direct tech deps: for each step, indices of in-build steps that
-    // produce its prereqs / upgradeFrom / producedBy. Swaps have no deps.
-    //
-    // Starting entities (Command Center, SCV, Nexus, Probe, Hatchery,
-    // Drone, Overlord) are excluded — they exist at t=0, so their prereqs
-    // are satisfied by the starting state, not by any user-listed step.
-    // Without this, a build like [SCV, Depot, ..., Command Center] would
-    // create a cycle: SCV's prereq is "command_center", which the rule
-    // would resolve to the user's listed CC (index 4), making SCV wait
-    // for CC; but CC's list-order before-set includes SCV, making CC
-    // wait for SCV. Each pass shifts both later, diverging.
-    const direct = steps.map(s => {
-      const out = new Set();
-      if (!s.entityId) return out;
-      const e = SC2_DATA.entities[s.entityId];
-      if (!e) return out;
-      const ids = new Set([
-        ...(e.prerequisites || []),
-        ...(e.upgradeFrom ? [e.upgradeFrom] : []),
-        ...(e.producedBy ? [e.producedBy] : []),
-      ]);
-      for (const id of ids) {
-        const prereq = SC2_DATA.entities[id];
-        if (prereq && prereq.starting) continue;
-        // A tech prereq needs only one in-build producer to commit before
-        // this step — the first-listed one. Adding every instance would
-        // force this step to wait for the LATEST instance, which is wrong
-        // (and creates divergent loops when an instance is listed after).
-        const indices = idToIndices.get(id);
-        if (indices && indices.length > 0) out.add(indices[0]);
-      }
-      return out;
-    });
-
-    // Transitive closure of tech deps.
-    const trans = direct.map(s => new Set(s));
-    let dirty = true;
-    while (dirty) {
-      dirty = false;
-      for (let i = 0; i < steps.length; i++) {
-        const before = trans[i].size;
-        for (const j of Array.from(trans[i])) {
-          for (const k of trans[j]) trans[i].add(k);
-        }
-        if (trans[i].size > before) dirty = true;
-      }
-    }
-
-    // The "producer key" groups steps that compete for the same slot:
-    //   - Upgrades and units: their upgradeFrom/producedBy.
-    //   - Buildings (built by an SCV/Probe): the synthetic '_worker' key
-    //     so [Barracks, Refinery] still share order.
-    // Two steps are list-order linked when they share a producer key OR
-    // when S is a building. The building-anchor rule preserves "list
-    // order is temporal order" for [CC, SCVs] and similar — listing a
-    // building means the user wants subsequent steps to fire after it.
-    // [SCV, Hellion] (different producers, neither a building) skips the
-    // constraint, so the Hellion isn't wedged behind the SCV's slot wait.
-    function producerKey(s) {
-      if (!s.entityId) return null;
-      const e = SC2_DATA.entities[s.entityId];
-      if (!e) return null;
-      if (e.upgradeFrom) return e.upgradeFrom;
-      if (e.producedBy) return e.producedBy;
-      if (e.type === 'building') return '_worker';
-      return null;
-    }
-    function isBuilding(s) {
-      if (!s.entityId) return false;
-      const e = SC2_DATA.entities[s.entityId];
-      return !!(e && e.type === 'building');
-    }
-
-    // Build before-sets. Swaps stay empty and are excluded from others'.
-    const beforeSets = steps.map(() => new Set());
-    for (let t = 0; t < steps.length; t++) {
-      if (steps[t].kind === 'swap') continue;
-      // Tech deps (skip swaps — there shouldn't be any in trans, but defensive).
-      for (const s of trans[t]) {
-        if (steps[s].kind !== 'swap') beforeSets[t].add(s);
-      }
-      // List-order: include S iff S is a building (anchor) OR S shares
-      // the producer pool with T.
-      const tKey = producerKey(steps[t]);
-      for (let s = 0; s < t; s++) {
-        if (steps[s].kind === 'swap') continue;
-        if (trans[s].has(t)) continue;
-        const sameKey = tKey != null && producerKey(steps[s]) === tKey;
-        if (!sameKey && !isBuilding(steps[s])) continue;
-        beforeSets[t].add(s);
-      }
-    }
-    return beforeSets;
+    const r = walkUntilQueueable(clone, step.entityId);
+    return r.ok
+      ? { ok: true, time: clone.t, blockedBy: r.blockedBy, wouldFireAt: r.wouldFireAt }
+      : { ok: false, reason: r.reason };
   }
 
-  // Replay committed steps onto a fresh sim, in time order. Each step is
-  // applied at its determined startTime — sim.t is advanced to that moment
-  // (firing prior completion events along the way) and then the action's
-  // effects are applied via sim.queue() (or applySwap() for swaps).
-  function replayCommitted(sim, committed) {
-    const sorted = committed.slice().sort((a, b) => {
-      if (a.startTime !== b.startTime) return a.startTime - b.startTime;
-      // Stable tie-break by original build-order position so resource priority
-      // matches the user's listing when two steps want the same instant.
-      return (a.originalIndex || 0) - (b.originalIndex || 0);
-    });
-    for (const c of sorted) {
-      if (c.startTime > sim.t) sim.advanceTo(c.startTime);
-      if (c.kind === 'swap') {
-        applySwap(sim, c.from, c.to);
-      } else {
-        const before = sim.timeline.length;
-        sim.queue(c.entityId);
-        // Stamp delay metadata onto the timeline entry that queue() just
-        // pushed, so the UI can show "delayed by supply / waited 30s".
-        if (sim.timeline.length > before && (c.blockedBy || c.wouldFireAt != null)) {
-          const entry = sim.timeline[sim.timeline.length - 1];
-          entry.blockedBy = c.blockedBy;
-          entry.wouldFireAt = c.wouldFireAt;
+  // Advance sim.t until canQueue(entity) is true, then return ok=true.
+  // If a constraint is permanently unsatisfiable (no future event can
+  // fix it), return ok=false with a reason. Records the moment the
+  // constraint LAST became blocked, so the UI can show "delayed by
+  // resources / supply / tech / producer".
+  function walkUntilQueueable(sim, entityId) {
+    const entity = SC2_DATA.entities[entityId];
+    if (!entity) return { ok: false, reason: 'unknown entity' };
+    const startT = sim.t;
+    let lastBlockReason = null;
+    let safety = 0;
+    while (safety++ < 5000) {
+      const techOk = sim.canSatisfyTech(entity);
+      const supplyOk = sim.canSatisfySupply(entity);
+      const producerOk = sim.canQueueProducer(entity);
+      const affordOk = sim.canAfford(entity);
+
+      if (techOk && supplyOk && producerOk && affordOk) {
+        // Step fires at sim.t. Compute "would have fired at" as the time
+        // the last blocking constraint cleared (= startT if nothing ever
+        // blocked, or the time we last advanced for a tech/supply/producer
+        // event if resources were the final blocker).
+        const wouldFireAt = lastBlockReason ? startT : sim.t;
+        return { ok: true, blockedBy: lastBlockReason, wouldFireAt };
+      }
+
+      // Tech / supply / producer can only change when a build event
+      // fires (something completes). MULE drops & worker returns affect
+      // resources only — when those are the only events available and
+      // the block isn't a resource one, we're stuck.
+      if (!techOk || !supplyOk || !producerOk) {
+        if (!techOk) lastBlockReason = 'tech';
+        else if (!supplyOk) lastBlockReason = 'supply';
+        else lastBlockReason = 'producer';
+        const nextEvt = nextStateChangingEvent(sim);
+        if (!isFinite(nextEvt)) {
+          if (!techOk) {
+            const need = (entity.prerequisites || [])
+              .map(p => SC2_DATA.entities[p]?.name || p).join(', ');
+            return { ok: false, reason: `tech prereq not satisfied (need ${need})` };
+          }
+          if (!supplyOk) return { ok: false, reason: `blocked by supply (${sim.supply_used}/${sim.supply_max}); add a ${SC2_DATA.entities[sim.cfg.supply].name}` };
+          const producerId = entity.upgradeFrom || entity.producedBy;
+          return { ok: false, reason: `no producer available (need ${SC2_DATA.entities[producerId]?.name || producerId})` };
         }
+        sim.advanceTo(nextEvt + 0.001);
+        continue;
+      }
+
+      // Tech/supply/producer all OK — only resources block. Walk to the
+      // earlier of (a) when current income rate would accumulate enough
+      // and (b) the next sim event (which might change the rate, e.g.
+      // startup_done firing at t=2 when mining begins, or a refinery
+      // completing and shifting workers to gas).
+      lastBlockReason = 'resources';
+      const wait = sim.timeAffordable(entity);
+      const target = isFinite(wait) ? sim.t + wait + 0.001 : Infinity;
+      const nextEvt = sim.nextEventTime();
+      const candidates = [target, isFinite(nextEvt) ? nextEvt + 0.001 : Infinity];
+      const stop = Math.min(...candidates.filter(isFinite));
+      if (!isFinite(stop)) {
+        return { ok: false, reason: `cannot afford (need ${entity.minerals}m${entity.gas ? '+' + entity.gas + 'g' : ''}); no income source` };
+      }
+      if (stop <= sim.t) {
+        sim.advanceTo(sim.t + 0.001);
+      } else {
+        sim.advanceTo(stop);
       }
     }
+    return { ok: false, reason: 'timeout' };
+  }
+
+  // Advance sim.t until both swap targets are valid (source addon
+  // exists, target structure exists, both have free producer slots).
+  function walkUntilSwap(sim, fromId, toId) {
+    const fromEntity = SC2_DATA.entities[fromId];
+    const toEntity = SC2_DATA.entities[toId];
+    if (!fromEntity || !toEntity) return { ok: false, reason: 'unknown addon ids' };
+    if (fromEntity.type !== 'addon' || toEntity.type !== 'addon') return { ok: false, reason: 'must swap addons' };
+    const fromStruct = fromEntity.producedBy;
+    const toStruct = toEntity.producedBy;
+    let safety = 0;
+    while (safety++ < 5000) {
+      const fromCount = sim.completed.get(fromId) || 0;
+      const toStructCount = sim.completed.get(toStruct) || 0;
+      const fromFree = sim.producerSlotsAvailable(fromStruct) > 0;
+      const toFree = sim.producerSlotsAvailable(toStruct) > 0;
+      if (fromCount > 0 && toStructCount > 0 && fromFree && toFree) {
+        return { ok: true };
+      }
+      const nextEvt = nextStateChangingEvent(sim);
+      if (!isFinite(nextEvt)) {
+        if (fromCount === 0) return { ok: false, reason: `source addon (${fromEntity.name}) not built` };
+        if (toStructCount === 0) return { ok: false, reason: `target structure (${SC2_DATA.entities[toStruct]?.name}) not built` };
+        return { ok: false, reason: 'structures perpetually busy' };
+      }
+      sim.advanceTo(nextEvt + 0.001);
+    }
+    return { ok: false, reason: 'timeout' };
   }
 
   // Apply a Terran lift-and-swap at sim.t. Reserves a producer slot on both
@@ -1110,126 +1099,6 @@ const SC2_SIM = (() => {
     sim._addLog(`Addon swap: ${fromEntity.name} → ${toEntity.name}`);
   }
 
-  // Probe context: a fresh sim plus a sorted queue of committed steps that
-  // get applied only when sim.t reaches their startTime. This way the probe
-  // walks forward from t=0 and finds the earliest moment the new action is
-  // queueable — without prematurely jumping to the latest committed time.
-  function makeProbeContext(committed, opts, race) {
-    const sim = new Sim(race, opts);
-    const sorted = committed.slice().sort((a, b) => {
-      if (a.startTime !== b.startTime) return a.startTime - b.startTime;
-      return (a.originalIndex || 0) - (b.originalIndex || 0);
-    });
-    let nextIdx = 0;
-    function applyDue() {
-      while (nextIdx < sorted.length && sorted[nextIdx].startTime <= sim.t + 1e-9) {
-        const c = sorted[nextIdx];
-        if (c.startTime > sim.t) sim.advanceTo(c.startTime);
-        if (c.kind === 'swap') applySwap(sim, c.from, c.to);
-        else sim.queue(c.entityId);
-        nextIdx++;
-      }
-    }
-    function nextCommitT() {
-      return nextIdx < sorted.length ? sorted[nextIdx].startTime : Infinity;
-    }
-    return { sim, applyDue, nextCommitT };
-  }
-
-  // Walk time forward until `entity` becomes queueable, starting at or
-  // after `lowerBound` (which encodes the order constraint — typically the
-  // max commit time of earlier-listed non-swap steps). The probe stops at
-  // the earliest of: next pending committed action, next sim event, or the
-  // affordability deadline. Returns {time} on success; {time: null, reason}
-  // if no future moment ever satisfies all constraints.
-  function findEarliestForEntity(committed, entityId, opts, race, lowerBound) {
-    const entity = SC2_DATA.entities[entityId];
-    if (!entity) return { time: null, reason: 'unknown entity' };
-
-    const ctx = makeProbeContext(committed, opts, race);
-    const sim = ctx.sim;
-
-    // Advance the probe to lowerBound first (applying any commits whose
-    // start times we cross), so the canQueue check below only fires at
-    // moments at or after the order-constraint floor.
-    if (lowerBound && lowerBound > 0) {
-      let guard = 0;
-      while (sim.t < lowerBound && guard++ < 5000) {
-        ctx.applyDue();
-        const stop = Math.min(ctx.nextCommitT(), sim.nextEventTime(), lowerBound);
-        if (stop <= sim.t) break;
-        sim.advanceTo(stop);
-      }
-      ctx.applyDue();
-    }
-
-    // Track when each individual constraint first became satisfied. The
-    // commit time is necessarily the max of these — whichever constraint
-    // was last to become OK is the "binding" one (the reason for any
-    // delay beyond an early-firing baseline). We expose this so the UI
-    // can show "step X was delayed N seconds by supply".
-    const firstOk = { tech: null, supply: null, producer: null, afford: null };
-
-    let safety = 0;
-    while (safety++ < 5000) {
-      ctx.applyDue();
-
-      const techOk = sim.canSatisfyTech(entity);
-      const supplyOk = sim.canSatisfySupply(entity);
-      const producerOk = sim.canQueueProducer(entity);
-      const affordOk = sim.canAfford(entity);
-      if (techOk && firstOk.tech == null) firstOk.tech = sim.t;
-      if (supplyOk && firstOk.supply == null) firstOk.supply = sim.t;
-      if (producerOk && firstOk.producer == null) firstOk.producer = sim.t;
-      if (affordOk && firstOk.afford == null) firstOk.afford = sim.t;
-
-      if (techOk && supplyOk && producerOk && affordOk) {
-        // All constraints satisfied — commit. Identify the binding one
-        // (latest to become OK) and the next-latest (when the action
-        // would've fired without it).
-        const ts = [
-          ['tech', firstOk.tech],
-          ['supply', firstOk.supply],
-          ['producer', firstOk.producer],
-          ['resources', firstOk.afford],
-        ].filter(([_, t]) => t != null).sort((a, b) => b[1] - a[1]);
-        const blockedBy = ts[0]?.[0] || null;
-        const wouldFireAt = ts[1]?.[1] != null ? ts[1][1] : sim.t;
-        return { time: sim.t, blockedBy, wouldFireAt };
-      }
-
-      if (!techOk || !supplyOk || !producerOk) {
-        // Tech/supply/producer can only change when a structure-or-upgrade
-        // completes. MULE drops & worker returns affect resources only —
-        // ignore them when deciding "is this ever going to be satisfied?",
-        // otherwise the recurring MULE cycle would keep the probe walking
-        // forever instead of failing cleanly.
-        const nextStateEvt = nextStateChangingEvent(sim);
-        const stop = Math.min(ctx.nextCommitT(), nextStateEvt);
-        if (!isFinite(stop)) {
-          if (!techOk) return { time: null, reason: `tech prereq not satisfied (need ${(entity.prerequisites || []).map(p => SC2_DATA.entities[p]?.name || p).join(', ')})` };
-          if (!supplyOk) return { time: null, reason: `blocked by supply (${sim.supply_used}/${sim.supply_max}); add a ${SC2_DATA.entities[sim.cfg.supply].name}` };
-          const producerId = entity.upgradeFrom || entity.producedBy;
-          return { time: null, reason: `no producer available (need ${SC2_DATA.entities[producerId]?.name || producerId})` };
-        }
-        sim.advanceTo(stop);
-        continue;
-      }
-
-      // Tech/supply/producer all OK; only resources block. Resources are
-      // affected by every event (including MULE), so use the full event
-      // time here.
-      const wait = sim.timeAffordable(entity);
-      const waitDone = isFinite(wait) ? sim.t + wait + 0.001 : Infinity;
-      const stop = Math.min(ctx.nextCommitT(), sim.nextEventTime(), waitDone);
-      if (!isFinite(stop)) {
-        return { time: null, reason: `cannot afford (need ${entity.minerals}m${entity.gas ? '+' + entity.gas + 'g' : ''}); no income source` };
-      }
-      sim.advanceTo(stop);
-    }
-    return { time: null, reason: 'timeout' };
-  }
-
   // Time of the next event that could affect tech / producer / supply
   // checks. Skips resource-only events (MULE drop/end, worker_returns)
   // because they keep firing indefinitely once an Orbital is built.
@@ -1240,43 +1109,6 @@ const SC2_SIM = (() => {
       }
     }
     return Infinity;
-  }
-
-  // Same probe-walk pattern for an addon swap. Walks time forward until
-  // both structures exist, the source addon exists, and a producer slot is
-  // free on both structures.
-  function findEarliestForSwap(committed, step, opts, race) {
-    const fromEntity = SC2_DATA.entities[step.from];
-    const toEntity = SC2_DATA.entities[step.to];
-    if (!fromEntity || !toEntity) return { time: null, reason: 'unknown addon ids' };
-    if (fromEntity.type !== 'addon' || toEntity.type !== 'addon') return { time: null, reason: 'must swap addons' };
-
-    const ctx = makeProbeContext(committed, opts, race);
-    const sim = ctx.sim;
-    const fromStruct = fromEntity.producedBy;
-    const toStruct = toEntity.producedBy;
-
-    let safety = 0;
-    while (safety++ < 5000) {
-      ctx.applyDue();
-
-      const fromCount = sim.completed.get(step.from) || 0;
-      const toStructCount = sim.completed.get(toStruct) || 0;
-      const fromFree = sim.producerSlotsAvailable(fromStruct) > 0;
-      const toFree = sim.producerSlotsAvailable(toStruct) > 0;
-      if (fromCount > 0 && toStructCount > 0 && fromFree && toFree) {
-        return { time: sim.t };
-      }
-
-      const stop = Math.min(ctx.nextCommitT(), sim.nextEventTime());
-      if (!isFinite(stop)) {
-        if (fromCount === 0) return { time: null, reason: `source addon (${fromEntity.name}) not built` };
-        if (toStructCount === 0) return { time: null, reason: `target structure (${SC2_DATA.entities[toStruct]?.name}) not built` };
-        return { time: null, reason: 'structures perpetually busy' };
-      }
-      sim.advanceTo(stop);
-    }
-    return { time: null, reason: 'timeout' };
   }
 
   return {

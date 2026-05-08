@@ -25,6 +25,7 @@
     forgeBrowseTab: 'unit', // 'unit' | 'building' | 'addon' | 'upgrade'
     forgePaletteCompact: false, // true = icon-only palette tiles
     forgePaletteCollapsed: false, // true = palette grid hidden, list gets full column
+    forgeListCompact: false, // true = dense one-line build-list rows
     explorerPickerRace: 'protoss',
     explorerPickerType: 'unit',
     scoutPickerType: 'unit',
@@ -671,16 +672,29 @@
     `;
   }
 
+  // Map an entity onto a build-role bucket for Gantt color coding. Workers
+  // are split out from the rest of the army (they're the heavy majority
+  // of "units" by count and have a clearly different gameplay role).
+  // Add-ons are grouped with buildings since both are infrastructure.
+  function entityRole(entity) {
+    if (!entity) return 'other';
+    if (entity.role === 'worker') return 'worker';
+    if (entity.type === 'unit') return 'army';
+    if (entity.type === 'building' || entity.type === 'addon') return 'tech';
+    if (entity.type === 'upgrade') return 'upgrade';
+    return 'other';
+  }
+
   function renderSimGantt(timeline, eft, targetId, refOffset) {
     const minT = refOffset;
     const maxT = Math.max(eft || 0, ...timeline.map(t => t.end));
     const span = Math.max(maxT - minT, 1);
-    // Long builds compress badly inside a fixed-width container — when the
-    // total span is large, individual bars get so narrow that their text
-    // clips to "..." or partial characters. Give the Gantt a sensible
-    // minimum inner width (≈3px per game-second, floor 640) and let the
-    // outer wrapper scroll horizontally when needed. Same approach as the
-    // production-utilization chart so they read consistently.
+    // Long builds compress badly inside a fixed-width container. Give
+    // the Gantt a sensible minimum inner width (≈3px per game-second,
+    // floor 640) and let the outer wrapper scroll horizontally when
+    // needed. Duration labels float OUTSIDE each bar (sibling to it,
+    // anchored at the bar's end edge) so they never clip — narrow bars
+    // would otherwise truncate "12s" to "1...".
     const minWidthPx = Math.max(640, Math.round(maxT * 3));
     const rows = timeline.map(item => {
       const startAdj = item.start - refOffset;
@@ -688,8 +702,10 @@
       const dur = item.end - item.start;
       const startPct = ((item.start - minT) / span) * 100;
       const widthPct = Math.max(((dur) / span) * 100, 0.5);
+      const ent = SC2_DATA.entities[item.id];
+      const role = entityRole(ent);
       const cls = [
-        `race-${item.race || 'terran'}`,
+        `role-${role}`,
         item.id === targetId ? 'is-target' : '',
       ].filter(Boolean).join(' ');
       const durStr = dur < 1 ? `${dur.toFixed(1)}s` : `${Math.round(dur)}s`;
@@ -697,15 +713,8 @@
       const supplyTag = r ? ` · ${r.supply_used}/${r.supply_max} sup` : '';
       const resourceTag = r ? ` · ${Math.round(r.minerals)}m / ${Math.round(r.gas)}g` : '';
       const fullTitle = `${item.name} · ${fmtTime(startAdj)} → ${fmtTime(endAdj)} · ${durStr}${supplyTag}${resourceTag}`;
-      const ent = SC2_DATA.entities[item.id];
       const iconMarkup = ent ? iconHtml(ent, { size: 18 }) : '';
-      // Bar text is suppressed when there isn't enough room for it. The
-      // approximate label width for "12s" / "1.4s" is ~22px; below that
-      // the text would clip mid-character, so we just hide it. The full
-      // duration is still in the info column on the right and the title
-      // tooltip on hover.
-      const approxBarPx = (widthPct / 100) * minWidthPx;
-      const showBarText = approxBarPx >= 22;
+      const tagLeftPct = Math.min(100, startPct + widthPct);
       return `
         <div class="gantt-row">
           <div class="gantt-label" title="${item.name}">
@@ -713,9 +722,8 @@
             <span class="gantt-label-text">${item.name}</span>
           </div>
           <div class="gantt-track">
-            <div class="gantt-bar ${cls}" style="left:${startPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%" title="${fullTitle}">
-              ${showBarText ? `<span class="bar-text">${durStr}</span>` : ''}
-            </div>
+            <div class="gantt-bar ${cls}" style="left:${startPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%" title="${fullTitle}"></div>
+            <span class="gantt-bar-tag" style="left:${tagLeftPct.toFixed(2)}%">${durStr}</span>
           </div>
           <div class="gantt-info">
             <span class="t-start">${fmtTimeBoth(startAdj)}</span>
@@ -1023,6 +1031,7 @@
         priority: state.forgePriority,
         paletteCompact: state.forgePaletteCompact,
         paletteCollapsed: state.forgePaletteCollapsed,
+        listCompact: state.forgeListCompact,
         savedAt: Date.now(),
       }));
     } catch (_) { /* quota/private mode — ignore */ }
@@ -1112,6 +1121,9 @@
       }
       if (typeof data.paletteCollapsed === 'boolean') {
         state.forgePaletteCollapsed = data.paletteCollapsed;
+      }
+      if (typeof data.listCompact === 'boolean') {
+        state.forgeListCompact = data.listCompact;
       }
       // Restore recent items per race (filter unknowns and clamp length)
       if (data.recent && typeof data.recent === 'object') {
@@ -1857,7 +1869,12 @@
         <div class="share-pane share-pane-salt" data-pane="salt">
           <div class="share-section">
             <div class="share-section-head">Export this build as SALT</div>
-            <textarea id="share-salt-out" class="share-textarea share-mono" readonly rows="3"></textarea>
+            <div class="share-options">
+              <label class="toggle"><input type="checkbox" id="share-salt-omit-workers" /><span>Omit workers</span></label>
+              <label class="toggle"><input type="checkbox" id="share-salt-omit-army" /><span>Omit army</span></label>
+              <span class="share-foot" style="margin:0;flex:1;text-align:right;">SALT mod renders ~40 prompts before cutoff — trim long builds with these.</span>
+            </div>
+            <textarea id="share-salt-out" class="share-textarea share-mono" readonly rows="4"></textarea>
             <div class="share-actions">
               <span class="share-skipped" id="share-salt-skipped"></span>
               <button type="button" class="ghost" data-act="copy-salt">📋 Copy SALT</button>
@@ -1930,15 +1947,29 @@
     // ----- SALT tab -----
     const saltOut = overlay.querySelector('#share-salt-out');
     const saltSkip = overlay.querySelector('#share-salt-skipped');
-    const result = encodeSALT(
-      state.forgeResult?.timeline || [],
-      `sc2-timings ${state.forgeRace} build`
-    );
-    saltOut.value = result.encoded;
-    if (result.skipped.length) {
-      const u = [...new Set(result.skipped)];
-      saltSkip.textContent = `Skipped (no SALT slot): ${u.slice(0, 6).join(', ')}${u.length > 6 ? ` +${u.length - 6} more` : ''}`;
-    }
+    const refreshSalt = () => {
+      const opts = {
+        omitWorkers: overlay.querySelector('#share-salt-omit-workers').checked,
+        omitArmy: overlay.querySelector('#share-salt-omit-army').checked,
+      };
+      const result = encodeSALT(
+        state.forgeResult?.timeline || [],
+        `sc2-timings ${state.forgeRace} build`,
+        opts
+      );
+      saltOut.value = result.encoded;
+      const parts = [`${result.kept} step${result.kept === 1 ? '' : 's'}`];
+      if (result.droppedByFilter) parts.push(`${result.droppedByFilter} filtered`);
+      if (result.skipped.length) {
+        const u = [...new Set(result.skipped)];
+        parts.push(`skipped: ${u.slice(0, 4).join(', ')}${u.length > 4 ? ` +${u.length - 4}` : ''}`);
+      }
+      saltSkip.textContent = parts.join(' · ');
+    };
+    overlay.querySelectorAll('#share-salt-omit-workers, #share-salt-omit-army').forEach(el => {
+      el.addEventListener('change', refreshSalt);
+    });
+    refreshSalt();
     overlay.querySelector('[data-act="copy-salt"]').addEventListener('click', async (ev) => {
       await copyAndFlash(saltOut.value, ev.currentTarget);
     });
@@ -2817,6 +2848,10 @@
         ? `${stepCount} step${stepCount === 1 ? '' : 's'}`
         : `${stepCount} step${stepCount === 1 ? '' : 's'} · ${actionCount} actions`;
     }
+    root.classList.toggle('compact', !!state.forgeListCompact);
+    // Reflect the active mode in the toggle button so it's a clear state.
+    const compactBtn = document.getElementById('forge-list-compact-toggle');
+    if (compactBtn) compactBtn.dataset.compact = state.forgeListCompact ? 'true' : 'false';
     if (!state.forgeOrder.length) {
       root.innerHTML = '<div class="forge-empty">Empty build. Use the palette above to add steps — click an icon, type / to search, or pick a preset.</div>';
       attachForgeListContainerDrop(root);
@@ -2853,7 +2888,7 @@
         const ent = SC2_DATA.entities[step.entityId];
         const buildTime = ent?.buildTime || 0;
         let threshold;
-        if (isResources) threshold = 15;
+        if (isResources) threshold = 3;
         else if (isProducer) threshold = Math.max(20, buildTime * 2 + 3);
         else threshold = 5;
         if (delay > threshold && !(i === 0 && isResources)) {
@@ -2863,8 +2898,15 @@
           delayLine = `<div class="${cls}" title="${tip}">⏳ Delayed ${delay.toFixed(0)}s by ${stepResult.blockedBy} (would have fired at ${niceWhen})</div>`;
         }
       }
+      // Compact mode shows only time + supply per row — the user asked
+      // for the minimum useful set. Full economy state (minerals, gas,
+      // income rates, delay reasons) stays available in the comfortable
+      // view and via the row's title attribute below.
+      const compact = !!state.forgeListCompact;
       const stateLine = res
-        ? `<span class="forge-state">${fmtTimeBoth(queuedAt)} · ${Math.round(res.minerals)}m / ${Math.round(res.gas)}g · ${res.supply_used}/${res.supply_max} sup · ${res.mineral_rate.toFixed(1)} m/s${res.gas_rate > 0 ? ' · ' + res.gas_rate.toFixed(1) + ' g/s' : ''}</span>${delayLine}`
+        ? (compact
+            ? `<span class="forge-state">${fmtTimeBoth(queuedAt)} · ${res.supply_used}/${res.supply_max}</span>`
+            : `<span class="forge-state">${fmtTimeBoth(queuedAt)} · ${Math.round(res.minerals)}m / ${Math.round(res.gas)}g · ${res.supply_used}/${res.supply_max} sup · ${res.mineral_rate.toFixed(1)} m/s${res.gas_rate > 0 ? ' · ' + res.gas_rate.toFixed(1) + ' g/s' : ''}</span>${delayLine}`)
         : warning
           ? `<span class="forge-state forge-state-warn" title="${reasonOnly}">⚠ ${reasonOnly}</span>`
           : '<span class="forge-state forge-state-pending">— not yet executed —</span>';
@@ -3350,10 +3392,25 @@
     // they could have committed elsewhere. Flagging the worst stretch per
     // resource keeps it actionable; tooltip shows when.
     const floats = detectResourceFloats(r.sim.history);
-    const insightsHtml = floats.length
+    // Producer-idle detection — a slot that sits unused for a long stretch
+    // even though the player has minerals usually means a unit/upgrade was
+    // listed too far down the build (or not at all). Surface the worst gap
+    // per producer so it's clear WHY the timeline has dead space.
+    const idleGaps = detectProducerIdleGaps(producerUtil);
+    const insightItems = [
+      ...floats.map(f => ({
+        title: `Floated ${f.peak.toFixed(0)} ${f.label} for ${f.duration.toFixed(0)}s, peaking at ${fmtTime(f.peakAt)}.`,
+        body: `📈 Floating ${f.label}: held ${f.peak.toFixed(0)}+ for ${f.duration.toFixed(0)}s starting ${fmtTime(f.start)} — economy outpacing spend.`,
+      })),
+      ...idleGaps.map(g => ({
+        title: `${g.producerName} sat idle from ${fmtTime(g.start)} to ${fmtTime(g.end)} — list a unit/upgrade in this window to fill it.`,
+        body: `⏸ Idle ${g.producerName}: ${g.duration.toFixed(0)}s gap starting ${fmtTime(g.start)} — slot free, but nothing listed for it.`,
+      })),
+    ];
+    const insightsHtml = insightItems.length
       ? `<div class="forge-insights">
           <h4>💡 Insights</h4>
-          ${floats.map(f => `<div class="forge-insight" title="Floated ${f.peak.toFixed(0)} ${f.label} for ${f.duration.toFixed(0)}s, peaking at ${fmtTime(f.peakAt)}.">📈 Floating ${f.label}: held ${f.peak.toFixed(0)}+ for ${f.duration.toFixed(0)}s starting ${fmtTime(f.start)} — economy outpacing spend.</div>`).join('')}
+          ${insightItems.map(it => `<div class="forge-insight" title="${it.title}">${it.body}</div>`).join('')}
         </div>`
       : '';
 
@@ -3904,6 +3961,48 @@
     minerals: { amount: 600, minDuration: 20 },
     gas: { amount: 300, minDuration: 20 },
   };
+  // Producer-idle detection. For each producer (CC/Nexus/Hatch, Barracks,
+  // Factory, Starport, etc.) the simulator already tracks per-lane busy
+  // intervals. A "gap" is a stretch where the lane is alive (between
+  // tAvail and tDeath) but has nothing scheduled — the slot was free
+  // and the player COULD have queued something, but the build order
+  // didn't list anything for it. Surface only the worst gap per producer
+  // so the insight list stays actionable.
+  function detectProducerIdleGaps(producerUtil) {
+    if (!Array.isArray(producerUtil)) return [];
+    const out = [];
+    const MIN_GAP = 15; // seconds — short gaps are usually unavoidable cycle slop
+    for (const u of producerUtil) {
+      let worst = null;
+      for (const lane of u.lanes || []) {
+        const intervals = (lane.intervals || []).slice().sort((a, b) => a.start - b.start);
+        let cursor = lane.tAvail;
+        for (const iv of intervals) {
+          if (iv.start > cursor + 1e-6) {
+            const gap = iv.start - cursor;
+            if (gap >= MIN_GAP && (!worst || gap > worst.duration)) {
+              worst = { duration: gap, start: cursor, end: iv.start };
+            }
+          }
+          cursor = Math.max(cursor, iv.end);
+        }
+        // No trailing-gap detection: a producer being idle at the END of
+        // the build is usually expected (the build is done) and noisy to
+        // surface as "fix this".
+      }
+      if (worst) {
+        out.push({
+          producerName: u.producer.name,
+          duration: worst.duration,
+          start: worst.start,
+          end: worst.end,
+        });
+      }
+    }
+    out.sort((a, b) => b.duration - a.duration);
+    return out;
+  }
+
   function detectResourceFloats(history) {
     if (!Array.isArray(history) || history.length < 4) return [];
     const out = [];
@@ -3940,8 +4039,10 @@
 
   function renderResourceChart(history, eft) {
     if (!history || history.length < 2) return '<div class="forge-empty">Not enough data to chart.</div>';
-    const W = 720, H = 220;
-    const PAD = { top: 16, right: 56, bottom: 28, left: 48 };
+    const W = 720, H = 232;
+    // Top padding bumped to fit a thin icon strip above the plot area
+    // marking milestone events (buildings / upgrades / addons).
+    const PAD = { top: 30, right: 56, bottom: 28, left: 48 };
     const innerW = W - PAD.left - PAD.right;
     const innerH = H - PAD.top - PAD.bottom;
     const tMax = Math.max(eft || 0, history[history.length - 1].t, 1);
@@ -3972,10 +4073,34 @@
     const tTicks = [];
     for (let t = 0; t <= tMax; t += tStep) tTicks.push(t);
 
-    // Mark each timeline event with a vertical hint
-    const events = (state.forgeResult?.timeline || []).map(item => ({
-      x: xS(item.start), name: item.name, t: item.start, race: item.race
-    }));
+    // Mark each timeline event with a vertical hint. Carries enough info
+    // for both the line tooltip and (for milestone events) the icon dot
+    // strip drawn above the plot area.
+    const events = (state.forgeResult?.timeline || []).map(item => {
+      const ent = SC2_DATA.entities[item.id];
+      const cost = ent ? `${ent.minerals || 0}m${ent.gas ? ' · ' + ent.gas + 'g' : ''}` : '';
+      const dur = item.end - item.start;
+      const supplyTag = item.resBefore ? ` · ${item.resBefore.supply_used}/${item.resBefore.supply_max} sup` : '';
+      const tip = `${item.name} · ${fmtTime(item.start)} → ${fmtTime(item.end)} (${dur < 1 ? dur.toFixed(1) : Math.round(dur)}s)${cost ? ' · ' + cost : ''}${supplyTag}`;
+      // Milestone = a "structural" event the user usually wants to scan
+      // for: buildings, addons, and upgrades. Units (esp. workers) are
+      // way too dense to mark with icons without cluttering the chart.
+      const isMilestone = ent && (ent.type === 'building' || ent.type === 'addon' || ent.type === 'upgrade');
+      return {
+        x: xS(item.start), name: item.name, t: item.start, race: item.race,
+        id: item.id, ent, tip, isMilestone,
+      };
+    });
+    // Limit milestone icons. If there are too many they overlap; pick a
+    // visible subset by deduping near-identical x positions.
+    const milestones = [];
+    let lastX = -Infinity;
+    for (const ev of events) {
+      if (!ev.isMilestone || !ev.ent) continue;
+      if (ev.x - lastX < 14) continue; // avoid icon overlap
+      milestones.push(ev);
+      lastX = ev.x;
+    }
 
     // Detect supply-blocked intervals: stretches where supply_used has hit
     // supply_max. Drawn as a red band along the bottom so the gap-causing
@@ -4009,8 +4134,19 @@
             <text x="${PAD.left - 6}" y="${yR(v) + 4}" class="axis-label" text-anchor="end">${v}</text>`).join('')}
           ${supTicks.map(v => `<text x="${W - PAD.right + 6}" y="${yS(v) + 4}" class="axis-label sup" text-anchor="start">${v}</text>`).join('')}
           ${tTicks.map(t => `<text x="${xS(t)}" y="${H - 8}" class="axis-label" text-anchor="middle">${fmtTime(t)}</text>`).join('')}
-          <!-- step markers -->
-          ${events.map(ev => `<line x1="${ev.x}" x2="${ev.x}" y1="${PAD.top}" y2="${H - PAD.bottom}" class="event-mark race-${ev.race}" />`).join('')}
+          <!-- step markers — every timeline event gets a vertical line.
+               Native <title> gives a hover tooltip describing the step. -->
+          ${events.map(ev => `<line x1="${ev.x}" x2="${ev.x}" y1="${PAD.top}" y2="${H - PAD.bottom}" class="event-mark race-${ev.race}"><title>${ev.tip}</title></line>`).join('')}
+          <!-- milestone icon strip — small portrait dots above the plot
+               for buildings/addons/upgrades, so structural events are
+               scannable at a glance. Native <title> gives the same
+               rich tooltip on hover. -->
+          ${milestones.map(m => `<g class="event-icon-mark">
+            <line x1="${m.x}" x2="${m.x}" y1="${PAD.top - 10}" y2="${PAD.top}" class="event-mark race-${m.race}" />
+            <image x="${(m.x - 8).toFixed(1)}" y="${PAD.top - 26}" width="16" height="16" href="${iconUrls(m.ent)[0]}" preserveAspectRatio="xMidYMid meet">
+              <title>${m.tip}</title>
+            </image>
+          </g>`).join('')}
           <!-- supply max (dashed) -->
           <path d="${path(supMaxPts)}" class="line line-sup-max" />
           <!-- supply used -->
@@ -4058,8 +4194,8 @@
     const dotWorkers = wrap.querySelector('.dot-workers');
 
     // Same constants as renderResourceChart — keep in sync if you change one
-    const W = 720, H = 220;
-    const PAD = { top: 16, right: 56, bottom: 28, left: 48 };
+    const W = 720, H = 232;
+    const PAD = { top: 30, right: 56, bottom: 28, left: 48 };
     const innerW = W - PAD.left - PAD.right;
     const innerH = H - PAD.top - PAD.bottom;
     const tMax = Math.max(eft || 0, history[history.length - 1].t, 1);
@@ -4737,6 +4873,15 @@
       collapseToggle.addEventListener('click', () => {
         state.forgePaletteCollapsed = !state.forgePaletteCollapsed;
         renderForgeBrowse();
+        persistForge();
+      });
+    }
+    // Build-list compact toggle — denser one-line rows. Persisted.
+    const listCompactBtn = document.getElementById('forge-list-compact-toggle');
+    if (listCompactBtn) {
+      listCompactBtn.addEventListener('click', () => {
+        state.forgeListCompact = !state.forgeListCompact;
+        renderForgeList();
         persistForge();
       });
     }
