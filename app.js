@@ -3126,13 +3126,17 @@
       const chronoable = state.forgeRace === 'protoss' && entForChrono
         && (entForChrono.type === 'unit' || entForChrono.type === 'upgrade' || entForChrono.type === 'addon');
       const chronoOn = !!step.chrono;
-      // Three states: this step CAST chrono (full bolt), this step only caught
-      // the SPILLOVER of an earlier cast on the same building (half-lit bolt),
-      // or no chrono (muted).
-      const chronoSpill = !chronoOn && !!(stepResult && stepResult.chronoed);
-      const chronoCls = chronoOn ? 'forge-chrono forge-chrono-set'
+      const chronoApplied = !!(stepResult && stepResult.chronoed);
+      // Chip states: CAST + boosted (full bolt) · CAST but NOT boosted because
+      // the Nexus had no energy yet (warning bolt) · SPILLOVER from an earlier
+      // cast (half bolt) · off (muted).
+      const chronoNoEnergy = chronoOn && !chronoApplied;
+      const chronoSpill = !chronoOn && chronoApplied;
+      const chronoCls = chronoNoEnergy ? 'forge-chrono forge-chrono-noenergy'
+        : chronoOn ? 'forge-chrono forge-chrono-set'
         : chronoSpill ? 'forge-chrono forge-chrono-spill' : 'forge-chrono';
-      const chronoTitle = chronoOn ? 'Chrono-boosted here (spends 50 Nexus energy when available). Click to turn off.'
+      const chronoTitle = chronoNoEnergy ? 'Chrono requested, but the Nexus had no energy here (a cast costs 50; the Nexus starts at 50 and regens ~0.56/s, so back-to-back casts must wait). No boost applied. Click to turn off.'
+        : chronoOn ? 'Chrono-boosted here (50 Nexus energy). Click to turn off.'
         : chronoSpill ? 'Caught the leftover Chrono Boost from an earlier cast on this building. Click to also cast here.'
         : 'Chrono Boost this step — spends 50 Nexus energy to finish it sooner. Click to enable.';
       const chronoChip = chronoable

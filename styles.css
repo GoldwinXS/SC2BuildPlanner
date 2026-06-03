@@ -1935,6 +1935,12 @@ button.ghost {
   opacity: 0.5;
 }
 .forge-row:hover .forge-chrono-spill { opacity: 0.7; }
+/* Requested but no Nexus energy was available — boost did NOT apply. Warn
+   colour so it's clear the chrono didn't take effect. */
+.forge-chrono-noenergy {
+  color: var(--warn);
+  opacity: 1;
+}
 .forge-list.compact .forge-chrono { height: 24px; }
 
 .forge-add {

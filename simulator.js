@@ -48,12 +48,12 @@ const SC2_SIM = (() => {
     queen_inject_energy: 25,
     queen_inject_larvae: 3,
     creep_tumour_energy: 25,
-    // Chrono Boost (Protoss). A Nexus regenerates 0.5625 energy/s; Chrono
-    // Boost costs 50 energy and runs a building in an accelerated (+50%) state
-    // for 20s, so it does 30s of work in 20s — i.e. a chrono'd task finishes
-    // up to ~10s sooner (or buildTime/3 for short tasks). Nexus starts at 0
-    // energy (LotV), so the first chrono lands ~89s in.
-    nexus_start_energy: 0,
+    // Chrono Boost (Protoss). A Nexus starts with 50 energy (LotV — enough for
+    // one Chrono Boost immediately at game start) and regenerates 0.5625
+    // energy/s. Chrono Boost costs 50 energy and runs a building in an
+    // accelerated (+50%) state for 20s, so it does 30s of work in 20s — a
+    // chrono'd task finishes up to ~10s sooner (or buildTime/3 for short tasks).
+    nexus_start_energy: 50,
     nexus_energy_regen: 0.5625,
     chrono_energy: 50,
     chrono_duration: 20,   // a cast accelerates the building (+50%) for 20s
