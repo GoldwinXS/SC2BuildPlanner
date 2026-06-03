@@ -3408,9 +3408,12 @@
     }
     for (const el of root.querySelectorAll('button[data-act]')) {
       el.addEventListener('click', (ev) => {
-        const row = ev.target.closest('.forge-row');
+        const row = ev.currentTarget.closest('.forge-row');
         const idx = parseInt(row.dataset.idx, 10);
-        const act = ev.target.dataset.act;
+        // Read the act/pos off the button the listener is bound to — NOT
+        // ev.target, which may be the inner <svg>/<path> or a label span when
+        // the user clicks the icon (that made icon clicks silently no-op).
+        const act = ev.currentTarget.dataset.act;
         if (act === 'delete') {
           state.forgeOrder.splice(idx, 1);
           renderForgeList();
@@ -3432,7 +3435,7 @@
           renderForgeList();
           scheduleForgeRun();
         } else if (act === 'prio-up' || act === 'prio-down') {
-          const pos = parseInt(ev.target.dataset.pos, 10);
+          const pos = parseInt(ev.currentTarget.dataset.pos, 10);
           const step = state.forgeOrder[idx];
           const order = sanitizePriority(step.order);
           if (act === 'prio-up' && pos > 0) {
