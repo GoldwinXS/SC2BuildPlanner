@@ -858,9 +858,20 @@ SC2_DATA.ptr = {
   startSupply: { terran: 13, protoss: 13, zerg: 12 },
   entities: {
     ghost: { supply: 3 },                    // supply cost 2 → 3
-    command_center: { provides: 13 },        // provided supply 15 → 13
+    command_center: { provides: 13 },        // provided supply 15 → 13 (Orbital/Planetary inherit)
     nexus: { provides: 13 },                 // provided supply 15 → 13
     hatchery: { provides: 4 },               // provided supply 6 → 4 (Lair/Hive inherit)
     z_carapace_1: { minerals: 100, gas: 100 }, // 150/150 → 100/100
+    // Gateway "pre-Warpgate" production times. After Warpgate research the
+    // warpgate_speedup (−35%) brings these to the patch's post-Warpgate values
+    // (Zealot/Adept/Stalker 18, Sentry 16, HT/DT 26).
+    zealot: { buildTime: 28 },               // 27 → 28
+    adept: { buildTime: 28 },                // 30 → 28
+    stalker: { buildTime: 28 },              // 27 → 28
+    sentry: { buildTime: 24 },               // 23 → 24
+    high_templar: { buildTime: 40 },         // → 40
+    dark_templar: { buildTime: 40 },         // → 40
+    // Warp Gate research moved from the Cybernetics Core to the Gateway.
+    warpgate_research: { producedBy: 'gateway', prerequisites: ['gateway'] },
   },
 };
