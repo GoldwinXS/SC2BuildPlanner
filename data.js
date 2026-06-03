@@ -853,13 +853,15 @@ const SC2_DATA = {
 SC2_DATA.ptr = {
   // 12 → 8 starting workers (all races).
   startWorkers: 8,
-  // Starting main's provided supply: Command Center / Nexus 15 → 13, and
-  // Zerg's Hatchery(6→4) + starting Overlord(8) → 12.
-  startSupply: { terran: 13, protoss: 13, zerg: 12 },
+  // Starting main's provided supply. Note: the live PTR shows the Nexus giving
+  // 12 (not the 13 the patch notes state), so Protoss start supply is 12.
+  // Command Center reads 13 in-game (matches the notes); Zerg = Hatchery(4) +
+  // starting Overlord(8) = 12.
+  startSupply: { terran: 13, protoss: 12, zerg: 12 },
   entities: {
     ghost: { supply: 3 },                    // supply cost 2 → 3
     command_center: { provides: 13 },        // provided supply 15 → 13 (Orbital/Planetary inherit)
-    nexus: { provides: 13 },                 // provided supply 15 → 13
+    nexus: { provides: 12 },                 // in-game PTR shows 12 (notes say 13)
     hatchery: { provides: 4 },               // provided supply 6 → 4 (Lair/Hive inherit)
     z_carapace_1: { minerals: 100, gas: 100 }, // 150/150 → 100/100
     // Gateway "pre-Warpgate" production times. After Warpgate research the
