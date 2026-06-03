@@ -23,7 +23,7 @@
 
   --accent: #4ec3ff;
   --accent-soft: rgba(78, 195, 255, 0.16);
-  --accent-glow: rgba(78, 195, 255, 0.45);
+  --accent-glow: var(--accent-glow);
   --accent-deep: #1d6fa8;
 
   --terran: #4ea3ff;
@@ -49,10 +49,65 @@
   --bevel-light: rgba(120, 180, 255, 0.2);
   --bevel-dark: rgba(0, 0, 0, 0.55);
   --scanline: rgba(78, 195, 255, 0.035);
-  --hud-shadow: 0 0 0 1px rgba(78, 195, 255, 0.08), 0 8px 24px rgba(0, 8, 24, 0.6);
+  --hud-shadow: 0 0 0 1px var(--accent-soft), 0 8px 24px rgba(0, 8, 24, 0.6);
+}
+
+/* Race-reactive theming: selecting a race re-tints the ENTIRE page — accent,
+   borders, panel gradients and the deep background — toward that race's colour
+   (Terran cobalt-blue, Protoss amber-gold, Zerg violet), keeping the dark HUD
+   style. The .race-transition class (added briefly on switch) animates it. */
+body[data-race="terran"] {
+  --accent: #4ea3ff; --accent-soft: rgba(78,163,255,0.16); --accent-glow: rgba(78,163,255,0.45); --accent-deep: #1d5fa8;
+  --bg-0: #04070d; --bg-1: #0a121d; --bg-2: #0f1a2a; --bg-3: #1a2840;
+  --border: #2c4a7a; --border-soft: #16263f; --border-bright: #4a7cb8;
+  --bevel-light: rgba(120,180,255,0.2); --scanline: rgba(78,163,255,0.035);
+  --panel-grad: linear-gradient(180deg, #16243d 0%, #0c1828 55%, #08111e 100%);
+  --panel-grad-soft: linear-gradient(180deg, #11203a 0%, #0a1424 100%);
+  --vignette-1: rgba(40, 90, 160, 0.18); --vignette-2: rgba(20, 60, 120, 0.12);
+  --header-tint: rgba(30, 60, 110, 0.25);
+}
+body[data-race="protoss"] {
+  --accent: #ffc84a; --accent-soft: rgba(255,200,74,0.16); --accent-glow: rgba(255,200,74,0.42); --accent-deep: #b88a1e;
+  --bg-0: #0b0903; --bg-1: #171207; --bg-2: #221a0b; --bg-3: #382a12;
+  --border: #6f561f; --border-soft: #2c2110; --border-bright: #b8902a;
+  --bevel-light: rgba(255,210,120,0.18); --scanline: rgba(255,200,74,0.03);
+  --panel-grad: linear-gradient(180deg, #2a2210 0%, #181206 55%, #120c03 100%);
+  --panel-grad-soft: linear-gradient(180deg, #221a0c 0%, #150f05 100%);
+  --vignette-1: rgba(190, 140, 40, 0.16); --vignette-2: rgba(150, 100, 20, 0.10);
+  --header-tint: rgba(120, 90, 30, 0.25);
+}
+body[data-race="zerg"] {
+  --accent: #c074e6; --accent-soft: rgba(192,116,230,0.16); --accent-glow: rgba(192,116,230,0.45); --accent-deep: #7a3da8;
+  --bg-0: #08040d; --bg-1: #130a1d; --bg-2: #1d0f2a; --bg-3: #311a40;
+  --border: #54287a; --border-soft: #251440; --border-bright: #8a4ab8;
+  --bevel-light: rgba(210,140,255,0.18); --scanline: rgba(192,116,230,0.035);
+  --panel-grad: linear-gradient(180deg, #241040 0%, #150a24 55%, #0d0518 100%);
+  --panel-grad-soft: linear-gradient(180deg, #1c0d33 0%, #110720 100%);
+  --vignette-1: rgba(150, 70, 200, 0.17); --vignette-2: rgba(110, 50, 160, 0.11);
+  --header-tint: rgba(90, 40, 130, 0.25);
+}
+/* Animated colour sweep when switching race — scoped to a transient class so
+   it never slows normal hover/focus transitions. */
+body.race-transition,
+body.race-transition *,
+body.race-transition *::before,
+body.race-transition *::after {
+  transition: background-color 0.55s ease, background-image 0.55s ease,
+              border-color 0.55s ease, color 0.4s ease, box-shadow 0.55s ease !important;
 }
 
 * { box-sizing: border-box; }
+
+/* Inline UI icons — inherit text colour (so they follow the race accent) and
+   sit on the text baseline next to labels. */
+.ui-ico {
+  display: inline-block;
+  vertical-align: -0.14em;
+  flex: none;
+}
+button .ui-ico + span,
+button span + .ui-ico { margin-left: 2px; }
+.btn-ico { display: inline-flex; align-items: center; gap: 5px; }
 
 html, body {
   margin: 0;
@@ -80,10 +135,12 @@ html, body {
 }
 .title-row {
   display: flex;
-  align-items: baseline;
-  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px 24px;
   flex-wrap: wrap;
 }
+.title-block { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .site-header h1 {
   margin: 0;
   font-size: 26px;
@@ -94,11 +151,57 @@ html, body {
   color: var(--text-2);
   font-size: 14px;
 }
+/* Global header controls — Race (drives all tabs + theme), Live/PTR, and the
+   "last updated" stamp, pinned to the right of the title. */
 .global-controls {
-  margin-top: 14px;
   display: flex;
-  gap: 18px;
+  align-items: center;
+  gap: 14px;
   flex-wrap: wrap;
+}
+/* Race radio — three icon buttons (Command Center / Nexus / Hatchery as the
+   per-race emblems); the active race is lit with the accent. */
+.global-race-radio {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+}
+.race-radio {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 5px;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.race-radio .race-emblem {
+  width: 26px; height: 26px;
+  flex: none;
+  object-fit: contain;
+  opacity: 0.65;
+  transition: opacity 0.1s, filter 0.1s;
+}
+.race-radio:hover .race-emblem { opacity: 1; }
+.race-radio[aria-checked="true"] .race-emblem {
+  opacity: 1;
+  filter: drop-shadow(0 0 5px var(--accent-glow));
+}
+.race-radio:hover { background: var(--bg-3); }
+.race-radio[aria-checked="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.global-updated {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
 }
 .toggle {
   display: inline-flex;
@@ -162,6 +265,133 @@ html, body {
   font-size: 14px;
   max-width: 680px;
 }
+/* Compact Forge header — keep the title + how-to but reclaim vertical space so
+   the actual build-making area sits higher on the page. */
+.panel-head-compact {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.panel-head-compact h2 { font-size: 18px; margin: 0; }
+/* "How it works" reduced to a small (?) badge; the body opens below as before. */
+.forge-howto-q { margin-top: 0; }
+.forge-howto-q > summary {
+  width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  padding: 0;
+}
+.forge-howto-q > summary::-webkit-details-marker { display: none; }
+.forge-howto-q > summary::before { content: none; }
+.forge-howto-q[open] > summary { border-color: var(--accent); color: var(--accent); }
+.forge-howto-q:hover > summary { color: var(--text-0); border-color: var(--border-bright); }
+.panel-head-sub {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-3);
+  text-transform: none;
+  letter-spacing: normal;
+}
+@media (max-width: 700px) { .panel-head-sub { display: none; } }
+
+/* Forge toolbar — a single tight row of secondary actions (Preset, Strict,
+   Builds, Share, Clear, Resource priority disclosure) replacing the old
+   stacked "Build setup" + "Resource priority" control groups. */
+.forge-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.forge-toolbar .ghost { padding: 6px 10px; font-size: 13px; }
+.forge-toolbar .ghost,
+.marker-btn,
+#forge-library, #forge-share { display: inline-flex; align-items: center; gap: 5px; }
+.marker-btn { gap: 5px; }
+.forge-toolbar .forge-strict-toggle { font-size: 12px; }
+.forge-toolbar-preset select { min-width: 150px; }
+.forge-toolbar .forge-status {
+  margin-left: auto;
+  align-self: center;
+  color: var(--text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.forge-clear-btn { margin-left: 6px; padding: 3px 10px; font-size: 12px; }
+
+/* "Options" disclosure — Strict order + Resource priority grouped as a small
+   popout so they don't clutter the band above the build editor. */
+.forge-options-disclosure { font-size: 12px; position: relative; }
+.forge-options-disclosure > summary {
+  display: inline-flex; align-items: center; gap: 5px;
+  cursor: pointer;
+  color: var(--text-2);
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  list-style: none;
+  user-select: none;
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+}
+.forge-options-disclosure > summary::-webkit-details-marker { display: none; }
+.forge-options-disclosure[open] > summary { color: var(--accent); border-color: var(--accent); }
+.forge-options-disclosure:hover > summary { color: var(--text-0); }
+.forge-options-body {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 280px;
+  margin-top: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-1);
+  box-shadow: var(--hud-shadow);
+}
+.forge-options-divider { height: 1px; background: var(--border-soft); margin: 10px 0; }
+.forge-priority-block .forge-priority-hint { display: block; margin-bottom: 8px; }
+
+/* (?) explanation badge in the compact Forge header. */
+.howto-q {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 13px; font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.1s, border-color 0.1s;
+}
+.howto-q:hover { color: var(--accent); border-color: var(--accent); }
+.howto-modal-body { max-height: 70vh; overflow-y: auto; }
+
+/* Race is global now (header selector) — hide the redundant per-tab race
+   pickers so there's one source of truth. */
+#mode-scout label:has(#scout-race),
+#mode-window label:has(#window-race),
+#explorer-race-tabs,
+#mode-reference .ref-tabs { display: none; }
+
+/* Race is global now (header selector) — hide the redundant per-tab race
+   pickers so there's one source of truth. */
+#mode-scout label:has(#scout-race),
+#mode-window label:has(#window-race),
+#explorer-race-tabs,
+#mode-reference .ref-tabs { display: none; }
 
 .forge-howto {
   margin-top: 10px;
@@ -280,6 +510,50 @@ html, body {
   font-weight: 500;
 }
 
+/* Labelled control groups — organise the Forge header into clearly-named
+   sections (Build setup / Resource priority) instead of one crowded bar. */
+.forge-controls-group { margin-bottom: 14px; }
+.forge-controls-group-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  font-weight: 600;
+  margin: 0 0 6px 2px;
+}
+.forge-controls-group .controls-row { margin-bottom: 0; }
+/* Pushes the Builds/Share/Clear cluster + status to the right of the setup row. */
+.forge-setup-spacer { flex: 1 1 0; min-width: 0; }
+.forge-status {
+  align-self: center;
+  color: var(--text-3);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+.forge-strict-toggle {
+  align-self: center;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+
+/* Production-lane tag on a build row — muted, sits after the entity name. */
+.forge-lane {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-3);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 0 5px;
+  text-transform: none;
+  letter-spacing: normal;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 select, input[type=text] {
   background: var(--bg-2);
   color: var(--text-0);
@@ -325,9 +599,8 @@ button.ghost {
   padding: 16px 18px;
   margin-bottom: 14px;
 }
-.result-card.race-terran { border-left: 4px solid var(--terran); }
-.result-card.race-protoss { border-left: 4px solid var(--protoss); }
-.result-card.race-zerg { border-left: 4px solid var(--zerg); }
+/* (No race-coloured left border — the global theme conveys race already, and
+   the stripe read as visual clutter on the result card.) */
 
 .result-headline {
   display: flex;
@@ -388,9 +661,9 @@ button.ghost {
   color: var(--text-3);
   text-transform: uppercase;
 }
-.cost-pill.minerals { color: #a3c2eb; }
-.cost-pill.gas { color: #4ade80; }
-.cost-pill.supply { color: #fbbf24; }
+.cost-pill.minerals { color: var(--text-0); }
+.cost-pill.gas { color: var(--good); }
+.cost-pill.supply { color: var(--warn); }
 
 /* ----- Roster: headline summary chips + visual grid ----- */
 .headline-roster {
@@ -1007,7 +1280,7 @@ button.ghost {
    to the plot area. Hover shows native tooltip via SVG <title>. */
 .res-chart .event-icon-mark image {
   cursor: help;
-  filter: drop-shadow(0 0 2px rgba(78, 195, 255, 0.3));
+  filter: drop-shadow(0 0 2px var(--accent-glow));
 }
 .res-chart .event-icon-mark image:hover {
   filter: drop-shadow(0 0 4px var(--accent));
@@ -1094,6 +1367,32 @@ button.ghost {
 .chart-tooltip .sw-min { background: #a3c2eb; }
 .chart-tooltip .sw-gas { background: var(--good); }
 .chart-tooltip .sw-sup { background: var(--warn); }
+
+/* Step context: every action queued on the same beat at the cursor. */
+.chart-tooltip .tt-context {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+.chart-tooltip .tt-context-time {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-3);
+  margin-bottom: 3px;
+  font-family: var(--mono, monospace);
+}
+.chart-tooltip .tt-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-1);
+  white-space: nowrap;
+  margin-bottom: 1px;
+}
+.chart-tooltip .tt-step:last-child { margin-bottom: 0; }
+.chart-tooltip .tt-step-name { font-weight: 500; }
 
 .gantt-info .t-supply { color: var(--warn); }
 
@@ -1224,6 +1523,32 @@ button.ghost {
   color: #06101e;
   border-color: var(--accent);
 }
+/* Live ⇄ PTR economy toggle — a small segmented control in the Forge
+   header. Mirrors .browse-tab so it reads as a paired switch. */
+.forge-mode-toggle {
+  display: inline-flex;
+  gap: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.forge-mode-toggle .mode-tab {
+  background: var(--bg-2);
+  border: 0;
+  border-right: 1px solid var(--border);
+  color: var(--text-1);
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.forge-mode-toggle .mode-tab:last-child { border-right: 0; }
+.forge-mode-toggle .mode-tab:hover { background: var(--bg-3); color: var(--text-0); }
+.forge-mode-toggle .mode-tab.active {
+  background: var(--accent);
+  color: #06101e;
+  font-weight: 600;
+}
+
 .forge-browse-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
@@ -1386,6 +1711,20 @@ button.ghost {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The two most-scanned values get emphasis; the rest of the economy
+   readout is muted so the eye lands on time + supply first. */
+.forge-state-time {
+  color: var(--text-0);
+  font-weight: 600;
+}
+.forge-state-supply {
+  color: var(--text-1);
+  background: var(--bg-3);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-left: 2px;
+}
+.forge-state-econ { color: var(--text-3); margin-left: 2px; }
 .forge-state-pending { color: var(--text-3); font-style: italic; }
 .forge-state-warn {
   color: var(--warn);
@@ -1440,7 +1779,7 @@ button.ghost {
   background: var(--bg-3);
 }
 .priority-chip-inline .priority-name { padding: 0 3px; font-weight: 400; }
-.forge-row-priority { background: rgba(90, 169, 255, 0.06); }
+.forge-row-priority { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .forge-priority-inline {
   display: flex;
   gap: 4px;
@@ -1501,6 +1840,103 @@ button.ghost {
 }
 .forge-del:hover { color: var(--bad); background: var(--bg-1); }
 
+/* Priority weight chip — same minimal aesthetic as the delete button:
+   transparent background, no border, text-only. Hidden by default; the
+   row reveals it on hover so the chrome is invisible until needed.
+   Always visible (and accent-colored) when the weight is bumped >1, so
+   the priorities you've actually set are visible at a glance. */
+.forge-weight {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  padding: 0 6px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0.5;
+  display: inline-flex;
+  align-items: center;
+  transition: opacity 0.1s, color 0.1s;
+}
+.forge-row:hover .forge-weight { opacity: 1; }
+.forge-weight:hover { color: var(--text-1); background: var(--bg-1); }
+.forge-weight-bump {
+  color: rgb(96, 165, 250);
+  opacity: 1;  /* always fully visible when set */
+}
+.forge-weight-bump:hover {
+  color: rgb(147, 197, 253);
+  background: var(--bg-1);
+}
+
+/* Timing-pin chip — mirrors .forge-weight: quiet until the row is hovered,
+   and stays fully lit (accent) once a pin is set. */
+.forge-pin {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  padding: 0 6px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0.5;
+  display: inline-flex;
+  align-items: center;
+  transition: opacity 0.1s, color 0.1s;
+}
+.forge-row:hover .forge-pin { opacity: 1; }
+.forge-pin:hover { color: var(--text-1); background: var(--bg-1); }
+.forge-pin-set {
+  color: rgb(250, 204, 21);
+  opacity: 1;  /* always fully visible when set */
+}
+.forge-pin-set:hover {
+  color: rgb(253, 224, 71);
+  background: var(--bg-1);
+}
+
+/* Chrono Boost chip (Protoss) — quiet until hovered, cyan-lit once enabled. */
+.forge-chrono {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 5px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.5;
+  display: inline-flex;
+  align-items: center;
+  transition: opacity 0.1s, color 0.1s;
+}
+.forge-row:hover .forge-chrono { opacity: 1; }
+.forge-chrono:hover { color: var(--text-1); background: var(--bg-1); }
+.forge-chrono-set {
+  color: var(--accent);
+  opacity: 1;
+  text-shadow: 0 0 6px var(--accent-glow);
+}
+/* Spillover: this step only caught the leftover window from an earlier cast —
+   show the bolt half-lit (accent, but dimmer, no glow) to distinguish it. */
+.forge-chrono-spill {
+  color: var(--accent);
+  opacity: 0.5;
+}
+.forge-row:hover .forge-chrono-spill { opacity: 0.7; }
+.forge-list.compact .forge-chrono { height: 24px; }
+
 .forge-add {
   display: flex;
   gap: 6px;
@@ -1560,7 +1996,7 @@ button.ghost {
 }
 .forge-browse-grid.compact .browse-tile::before { display: none; }
 .forge-browse-grid.compact .browse-tile:hover {
-  background: rgba(78, 195, 255, 0.12);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
   border: 0;
   box-shadow: 0 0 10px var(--accent-soft);
   transform: none;
@@ -1596,7 +2032,7 @@ button.ghost {
   background: transparent;
   transition: background 0.1s;
 }
-.forge-insert:hover { background: rgba(90, 169, 255, 0.06); }
+.forge-insert:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .forge-insert:hover::before { background: var(--accent); }
 .forge-insert::after {
   content: '+ insert';
@@ -1616,7 +2052,7 @@ button.ghost {
   font-family: var(--mono);
 }
 .forge-insert:hover::after { opacity: 1; }
-.forge-insert.active { background: rgba(90, 169, 255, 0.12); }
+.forge-insert.active { background: color-mix(in srgb, var(--accent) 13%, transparent); }
 .forge-insert.active::before { background: var(--accent); }
 
 /* Quick-insert popover — anchored next to the insert point. Shows the
@@ -1657,7 +2093,7 @@ button.ghost {
 }
 .forge-insert-popover-grid .browse-tile::before { display: none; }
 .forge-insert-popover-grid .browse-tile:hover {
-  background: rgba(78, 195, 255, 0.12);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
   border: 0;
   box-shadow: 0 0 10px var(--accent-soft);
   transform: none;
@@ -1709,8 +2145,8 @@ button.ghost {
   padding: 2px 0;
 }
 .forge-insights {
-  background: rgba(90, 169, 255, 0.06);
-  border: 1px solid rgba(90, 169, 255, 0.25);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
   border-radius: var(--radius);
   padding: 12px 14px;
   margin: 14px 0;
@@ -2002,8 +2438,8 @@ button.ghost {
 }
 
 .replay-step-swap {
-  background: rgba(90, 169, 255, 0.08);
-  border-color: rgba(90, 169, 255, 0.25);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
   color: var(--accent);
 }
 
@@ -2087,8 +2523,8 @@ button.ghost {
 }
 
 .forge-row-swap {
-  background: rgba(90, 169, 255, 0.06);
-  border-color: rgba(90, 169, 255, 0.25);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 /* ----- Notes / footer ----- */
@@ -2169,9 +2605,10 @@ code {
    stretches; flagged producers turn red.
    ============================================================ */
 .prod-util-scroll {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  /* Subtle outer border so the scrollable area is visually contained. */
+  /* Cap to container width — segments scale to fit instead of overflowing.
+     Short events get a 2px minimum visual width via .prod-util-seg's
+     percentage minimum so they stay hoverable. */
+  overflow-x: hidden;
   border-radius: var(--radius);
 }
 .prod-util {
@@ -2261,6 +2698,7 @@ code {
 .prod-util-seg {
   position: absolute;
   top: 0; bottom: 0;
+  min-width: 2px;  /* keep short actions hoverable when the Gantt is compressed */
   background: var(--good);
   border-radius: 1px;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
@@ -2306,6 +2744,117 @@ code {
   border-color: rgba(148, 163, 184, 0.5);
 }
 .prod-util-idle:hover { filter: brightness(1.4); }
+
+/* Styled hover tooltip for Gantt segments. Positioned via JS, anchored to
+   body so it doesn't get clipped by the scroll container. Short delay,
+   rich content, theme-coloured borders by cause. */
+.prod-util-tooltip {
+  position: absolute;
+  z-index: 10000;
+  background: var(--bg-1, #1a1a1a);
+  border: 1px solid var(--border-1, #333);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255,255,255,0.04);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-1, #ddd);
+  max-width: 380px;
+  line-height: 1.45;
+  pointer-events: none;
+  font-family: var(--ui-font, system-ui, sans-serif);
+}
+.prod-util-tooltip .ptip-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-1, #333);
+}
+.prod-util-tooltip .ptip-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-1, #fff);
+}
+.prod-util-tooltip .ptip-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-3, #888);
+}
+.prod-util-tooltip .ptip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 2px;
+}
+.prod-util-tooltip .ptip-row > span:first-child {
+  color: var(--text-3, #888);
+}
+.prod-util-tooltip .ptip-row > span:last-child {
+  color: var(--text-1, #ddd);
+  font-family: var(--mono, monospace);
+}
+.prod-util-tooltip .ptip-mute { color: var(--text-3, #888); }
+.prod-util-tooltip .ptip-text {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-1, #333);
+  color: var(--text-2, #bbb);
+  font-size: 11.5px;
+}
+.prod-util-tooltip .ptip-warn {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(248, 113, 113, 0.4);
+  color: rgb(248, 113, 113);
+  font-size: 11.5px;
+}
+/* Cause-colored title accents for idle tooltips. */
+.prod-util-tooltip .ptip-title.ptip-idle-supply .ptip-name { color: rgb(248, 113, 113); }
+.prod-util-tooltip .ptip-title.ptip-idle-resources .ptip-name { color: rgb(251, 191, 36); }
+.prod-util-tooltip .ptip-title.ptip-idle-list-order .ptip-name { color: rgb(148, 163, 184); }
+
+/* Competing-spends list inside the idle tooltip — shows what was draining
+   the bank in/near a resource-blocked gap. */
+.prod-util-tooltip .ptip-compete {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-1, #333);
+}
+.prod-util-tooltip .ptip-compete-head {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-3, #888);
+  margin-bottom: 4px;
+}
+.prod-util-tooltip .ptip-compete-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 10px;
+  font-size: 11.5px;
+  margin-bottom: 1px;
+}
+.prod-util-tooltip .ptip-compete-row > span:nth-child(2) {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+}
+.prod-util-tooltip .ptip-compete-row > span:nth-child(4) {
+  font-family: var(--mono, monospace);
+  color: rgb(251, 191, 36);
+}
+.prod-util-tooltip .ptip-weight {
+  font-family: var(--mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-3, #888);
+  letter-spacing: -0.5px;
+}
+.prod-util-tooltip .ptip-weight-bump {
+  color: rgb(96, 165, 250);  /* blue accent so >1 weights pop */
+  font-weight: 600;
+}
 
 /* Orphan lane — actions that had no eligible producer free in time
    (e.g., a 2nd Orbital Command queued without a 2nd Command Center
@@ -2496,8 +3045,8 @@ code {
    very subtle scanline pattern. Fixed so it doesn't scroll. */
 html, body {
   background:
-    radial-gradient(ellipse at 50% -10%, rgba(40, 90, 160, 0.18), transparent 60%),
-    radial-gradient(ellipse at 80% 110%, rgba(20, 60, 120, 0.12), transparent 55%),
+    radial-gradient(ellipse at 50% -10%, var(--vignette-1), transparent 60%),
+    radial-gradient(ellipse at 80% 110%, var(--vignette-2), transparent 55%),
     var(--bg-0);
   background-attachment: fixed;
   position: relative;
@@ -2524,11 +3073,11 @@ body::before {
 /* ----- Site header: command-bridge feel ----- */
 .site-header {
   background:
-    linear-gradient(180deg, rgba(30, 60, 110, 0.25) 0%, rgba(10, 18, 30, 0.6) 100%),
+    linear-gradient(180deg, var(--header-tint) 0%, rgba(10, 12, 18, 0.6) 100%),
     var(--bg-0);
   border-bottom: 1px solid var(--border);
   box-shadow:
-    inset 0 -1px 0 rgba(78, 195, 255, 0.18),
+    inset 0 -1px 0 var(--accent-soft),
     0 1px 0 rgba(0, 0, 0, 0.5),
     0 8px 24px rgba(0, 0, 0, 0.5);
   padding: 28px 0 22px;
@@ -2549,7 +3098,7 @@ body::before {
   letter-spacing: 4px;
   text-transform: uppercase;
   color: var(--text-0);
-  text-shadow: 0 0 18px rgba(78, 195, 255, 0.4), 0 0 1px rgba(78, 195, 255, 0.6);
+  text-shadow: 0 0 18px var(--accent-glow), 0 0 1px var(--accent-glow);
   position: relative;
   padding-left: 18px;
 }
@@ -2573,7 +3122,7 @@ body::before {
 .mode-nav {
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
-  box-shadow: inset 0 1px 0 rgba(78, 195, 255, 0.06);
+  box-shadow: inset 0 1px 0 var(--accent-soft);
 }
 .mode-nav .container {
   display: flex;
@@ -2605,10 +3154,10 @@ body::before {
   transition: transform 0.15s;
   box-shadow: 0 0 8px var(--accent-glow);
 }
-.mode-btn:hover { color: var(--text-0); background: rgba(78, 195, 255, 0.04); }
+.mode-btn:hover { color: var(--text-0); background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .mode-btn.active {
   color: var(--accent);
-  background: linear-gradient(180deg, rgba(78, 195, 255, 0.08), transparent);
+  background: linear-gradient(180deg, var(--accent-soft), transparent);
 }
 .mode-btn.active::after { transform: scaleX(1); }
 .mode-btn:first-child { border-left: 1px solid var(--border-soft); }
@@ -2643,6 +3192,8 @@ body::before {
 .notes-block {
   background: var(--panel-grad);
   border: 1px solid var(--border);
+  /* Race-tinted HUD frame edge along the top — like the in-game panel rails. */
+  border-top: 2px solid color-mix(in srgb, var(--accent) 55%, var(--border));
   box-shadow:
     inset 0 1px 0 var(--bevel-light),
     inset 0 -1px 0 var(--bevel-dark),
@@ -2650,22 +3201,25 @@ body::before {
   position: relative;
   border-radius: 0;
 }
+/* Subtle 2011-HUD corner brackets — small accent notches at the top-left and
+   bottom-right of each column, plus a thin accent rule along the very top edge.
+   Kept low-opacity so they read as "framing", not clutter. */
 .forge-column::before {
   content: '';
   position: absolute;
   top: 0; left: 0;
-  width: 14px; height: 14px;
-  background: linear-gradient(135deg, var(--accent) 0 50%, transparent 50%);
-  opacity: 0.6;
+  width: 10px; height: 10px;
+  background: linear-gradient(135deg, var(--accent) 0 45%, transparent 45%);
+  opacity: 0.4;
   pointer-events: none;
 }
 .forge-column::after {
   content: '';
   position: absolute;
   bottom: 0; right: 0;
-  width: 14px; height: 14px;
-  background: linear-gradient(315deg, var(--accent) 0 50%, transparent 50%);
-  opacity: 0.6;
+  width: 10px; height: 10px;
+  background: linear-gradient(315deg, var(--accent) 0 45%, transparent 45%);
+  opacity: 0.4;
   pointer-events: none;
 }
 
@@ -2691,8 +3245,8 @@ body::before {
 .forge-add #forge-add-btn,
 #scout-add-btn,
 .modal-actions button[data-act="ok"] {
-  background: linear-gradient(180deg, #2c69a8 0%, #1d4d80 100%);
-  color: #ecf6ff;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 60%, #060b14) 0%, color-mix(in srgb, var(--accent) 34%, #060b14) 100%);
+  color: var(--text-0);
   border: 0;
   text-transform: uppercase;
   letter-spacing: 1.2px;
@@ -2702,9 +3256,9 @@ body::before {
   cursor: pointer;
   clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
   box-shadow:
-    inset 0 1px 0 rgba(180, 220, 255, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
     inset 0 -1px 0 rgba(0, 0, 0, 0.4),
-    0 0 10px rgba(78, 195, 255, 0.2);
+    0 0 10px var(--accent-soft);
   transition: filter 0.1s, box-shadow 0.1s;
 }
 .forge-add #forge-add-btn:hover,
@@ -2712,12 +3266,12 @@ body::before {
 .modal-actions button[data-act="ok"]:hover {
   filter: brightness(1.15);
   box-shadow:
-    inset 0 1px 0 rgba(200, 230, 255, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
     inset 0 -1px 0 rgba(0, 0, 0, 0.4),
-    0 0 14px rgba(78, 195, 255, 0.45);
+    0 0 14px var(--accent-glow);
 }
 button.ghost {
-  background: linear-gradient(180deg, rgba(40, 70, 110, 0.4), rgba(15, 28, 48, 0.4));
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
   color: var(--text-1);
   border: 1px solid var(--border);
   text-transform: uppercase;
@@ -2729,7 +3283,7 @@ button.ghost {
   transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 button.ghost:hover {
-  background: linear-gradient(180deg, rgba(60, 100, 160, 0.5), rgba(20, 40, 70, 0.5));
+  background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
   border-color: var(--accent);
   color: var(--text-0);
 }
@@ -2830,7 +3384,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 }
 .browse-tab:hover,
 .ref-tab:hover {
-  background: linear-gradient(180deg, rgba(60, 100, 160, 0.4), rgba(20, 40, 70, 0.4));
+  background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
   color: var(--text-0);
   border-color: var(--border-bright);
 }
@@ -2863,7 +3417,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 }
 .browse-tile:hover {
   border-color: var(--accent);
-  background: linear-gradient(180deg, rgba(40, 80, 130, 0.7), rgba(15, 35, 60, 0.7));
+  background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
   box-shadow: 0 0 12px var(--accent-soft);
   transform: translateY(-1px);
 }
@@ -2884,7 +3438,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
   border: 1px solid var(--border-soft);
   border-radius: 0;
   border-left: 3px solid var(--border);
-  box-shadow: inset 0 1px 0 rgba(78, 195, 255, 0.04);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent) 5%, transparent);
 }
 .forge-row:hover {
   background: linear-gradient(180deg, rgba(40, 75, 120, 0.5), rgba(20, 40, 70, 0.5));
@@ -2913,7 +3467,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
   border-radius: 0;
 }
 .quick-chip:hover {
-  background: linear-gradient(180deg, rgba(60, 100, 160, 0.5), rgba(20, 40, 70, 0.5));
+  background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
   border-color: var(--accent);
   box-shadow: 0 0 8px var(--accent-soft);
 }
@@ -2997,8 +3551,8 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
     90deg,
     transparent 0,
     transparent 8px,
-    rgba(78, 195, 255, 0.04) 8px,
-    rgba(78, 195, 255, 0.04) 9px
+    color-mix(in srgb, var(--accent) 5%, transparent) 8px,
+    color-mix(in srgb, var(--accent) 5%, transparent) 9px
   );
   pointer-events: none;
 }
@@ -3017,7 +3571,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
   background: rgba(8, 14, 26, 0.5);
 }
 .path-table thead th {
-  background: linear-gradient(180deg, rgba(30, 60, 100, 0.5), rgba(10, 22, 40, 0.7));
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
   text-transform: uppercase;
   letter-spacing: 1.3px;
   font-size: 10px;
@@ -3025,7 +3579,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
   border-bottom: 1px solid var(--border);
   padding: 8px 10px;
 }
-.path-table tbody tr:hover { background: rgba(78, 195, 255, 0.04); }
+.path-table tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 
 /* ----- Headings inside result panels ----- */
 .path-section h3 {
@@ -3079,7 +3633,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 }
 .roster-item:hover {
   border-color: var(--accent);
-  background: rgba(40, 80, 130, 0.4);
+  background: var(--accent-soft);
   box-shadow: 0 0 8px var(--accent-soft);
 }
 .roster-count {
@@ -3097,7 +3651,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 .site-footer {
   background: var(--bg-0);
   border-top: 1px solid var(--border);
-  box-shadow: inset 0 1px 0 rgba(78, 195, 255, 0.1);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent) 11%, transparent);
   color: var(--text-3);
   font-family: var(--mono);
   font-size: 11px;
@@ -3109,12 +3663,12 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--bg-0); }
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, var(--accent-deep), #0d3a5e);
+  background: var(--bg-3);
   border: 1px solid var(--bg-0);
+  border-radius: 6px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, var(--accent), var(--accent-deep));
-}
+::-webkit-scrollbar-thumb:hover { background: var(--border); }
+* { scrollbar-color: var(--bg-3) var(--bg-0); }  /* Firefox */
 
 /* ----- Notes block ----- */
 .notes-block {
@@ -3337,7 +3891,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 }
 .entity-picker-grid .browse-tile.is-selected {
   border-color: var(--accent);
-  background: linear-gradient(180deg, rgba(78, 195, 255, 0.2), rgba(40, 80, 130, 0.4));
+  background: linear-gradient(180deg, var(--accent-soft), color-mix(in srgb, var(--accent) 22%, transparent));
   box-shadow: 0 0 12px var(--accent-glow);
 }
 
@@ -3377,8 +3931,10 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
    self-labels). The palette grid is collapsible so users can give the
    Build Order list the full column when they're working on a long build. */
 
-/* Tighten the row that holds Swap / Fill Workers / Priority shift +
-   the recent chips strip — they share a row instead of stacking. */
+/* The row holding the situational marker buttons (Swap / Priority / Gas /
+   Idle) + the recent chips strip — they share a row instead of stacking.
+   These are advanced/occasional actions, so they're visually demoted below
+   the primary add-entity flow. */
 .forge-action-row {
   display: flex;
   flex-wrap: wrap;
@@ -3387,6 +3943,21 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px dashed var(--border-soft);
+}
+.forge-action-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+.forge-action-row .marker-btn {
+  font-size: 12px;
+  padding: 3px 8px;
+  opacity: 0.85;
+}
+.forge-action-row .marker-btn:hover {
+  opacity: 1;
 }
 .forge-action-row .forge-quick-add {
   margin-left: auto;
@@ -3416,7 +3987,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 .palette-collapse-toggle:hover {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(78, 195, 255, 0.08);
+  background: var(--accent-soft);
 }
 .forge-browse[data-collapsed="true"] .forge-browse-grid { display: none; }
 .forge-browse[data-collapsed="true"] .palette-collapse-toggle { transform: rotate(-90deg); }
@@ -3471,14 +4042,14 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
   margin: 16px -16px 12px;
   padding: 10px 18px;
   background:
-    linear-gradient(180deg, rgba(78, 195, 255, 0.12) 0%, rgba(78, 195, 255, 0.04) 100%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 13%, transparent) 0%, color-mix(in srgb, var(--accent) 5%, transparent) 100%),
     linear-gradient(180deg, rgba(20, 40, 75, 0.6), rgba(8, 18, 32, 0.6));
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   box-shadow:
     inset 0 1px 0 var(--bevel-light),
     inset 0 -1px 0 var(--bevel-dark),
-    0 0 12px rgba(78, 195, 255, 0.08);
+    0 0 12px var(--accent-soft);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3531,7 +4102,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 .forge-list-density-toggle:hover {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(78, 195, 255, 0.08);
+  background: var(--accent-soft);
 }
 .forge-list-density-toggle .density-icon-compact { display: none; }
 .forge-list-density-toggle[data-compact="true"] .density-icon-comfy { display: none; }
@@ -3596,6 +4167,17 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 .forge-list.compact .forge-cost { display: none; }
 .forge-list.compact .forge-state-pending,
 .forge-list.compact .forge-delay { display: none; }
+/* Compact-mode weight chip: visible at all weights so the user can see
+   AND change priority without leaving compact mode. Sized to match the
+   adjacent repeat input so the controls strip stays visually aligned. */
+.forge-list.compact .forge-weight,
+.forge-list.compact .forge-pin {
+  height: 24px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+}
 /* Compact repeat input — keep the native spinner arrows visible so
    users can click up/down. Width sized to fit two digits plus the OS
    spinner widget without crowding. */
@@ -3603,8 +4185,15 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
   width: 56px;
   height: 24px;
   padding: 2px 4px;
+  box-sizing: border-box;
 }
-.forge-list.compact .forge-del { font-size: 14px; padding: 2px 6px; }
+.forge-list.compact .forge-del {
+  font-size: 14px;
+  padding: 0 6px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+}
 .forge-list.compact .forge-row-priority .forge-priority-inline { display: none; }
 .forge-list.compact .forge-insert { height: 4px; margin: -1px 0; }
 .forge-list.compact .forge-insert::after { display: none; }
@@ -3857,7 +4446,7 @@ select optgroup { background: var(--bg-0); color: var(--text-0); }
 @media (hover: none) {
   .forge-insert::before { background: var(--border-soft); }
   .forge-insert::after { opacity: 0.5; }
-  .forge-insert:active { background: rgba(78, 195, 255, 0.15); }
+  .forge-insert:active { background: var(--accent-soft); }
 }
 
 /* Mobile-only de-clutter: drop ambient labels that consume space

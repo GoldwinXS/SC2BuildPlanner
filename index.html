@@ -3,15 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SC2 Timings — Threat Planner</title>
+  <title>Build Forge — SC2 build planner</title>
+  <link rel="icon" type="image/png" href="icons/forge.png" />
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body data-race="protoss">
   <header class="site-header">
     <div class="container">
       <div class="title-row">
-        <h1>SC2 Timings</h1>
-        <span class="subtitle">Build planner · timing reference · replay tools</span>
+        <h1>Build Forge</h1>
+        <div class="global-controls">
+          <div class="global-race-radio" id="global-race" role="radiogroup" aria-label="Race">
+            <button type="button" class="race-radio" data-race="terran" role="radio" aria-checked="false" title="Terran" aria-label="Terran">
+              <img class="race-emblem" src="icons/terran.png" alt="" onerror="this.onerror=null;this.src='icons/command_center.png'" />
+            </button>
+            <button type="button" class="race-radio" data-race="protoss" role="radio" aria-checked="true" title="Protoss" aria-label="Protoss">
+              <img class="race-emblem" src="icons/protoss.png" alt="" onerror="this.onerror=null;this.src='icons/nexus.png'" />
+            </button>
+            <button type="button" class="race-radio" data-race="zerg" role="radio" aria-checked="false" title="Zerg" aria-label="Zerg">
+              <img class="race-emblem" src="icons/zerg.png" alt="" onerror="this.onerror=null;this.src='icons/hatchery.png'" />
+            </button>
+          </div>
+          <div id="global-mode" class="forge-mode-toggle" role="group" aria-label="Economy ruleset">
+            <button type="button" class="mode-tab active" data-mode="live" title="Current live ladder economy — 12 starting workers">Live</button>
+            <button type="button" class="mode-tab" data-mode="ptr" title="PTR 5.0.16 economy — 8 starting workers">PTR 5.0.16</button>
+          </div>
+          <button id="forge-library" class="ghost" type="button" data-icon="builds" title="Open the build library — save, load, manage and import builds"><span>Builds</span></button>
+          <button id="forge-share" class="ghost" type="button" data-icon="share" title="Copy the current build as text or SALT, or import one"><span>Share</span></button>
+          <button id="forge-howto-btn" class="howto-q" type="button" title="How it works · how to use it" aria-label="How it works">?</button>
+          <span class="global-updated" id="global-updated" title="When this tool's data and mechanics were last updated"></span>
+        </div>
       </div>
     </div>
   </header>
@@ -79,11 +100,7 @@
 
     <!-- ============== BUILD FORGE ============== -->
     <section id="mode-forge" class="mode-panel active">
-      <div class="panel-head">
-        <h2>Build Forge</h2>
-        <p>Compose a build order step-by-step. The simulator runs your exact list — no greedy planner — so you can see precisely when each action lands, what blocks it, and how decisions cascade.</p>
-        <details class="forge-howto">
-          <summary>How it works · how to use it</summary>
+      <div id="forge-howto-content" hidden>
           <div class="forge-howto-body">
             <h4>How the simulator runs your build</h4>
             <p>Each step is assigned a <strong>producer pool</strong> — the structure that ties up its slot:</p>
@@ -105,7 +122,7 @@
             <ul>
               <li><strong>Build list</strong> shows each step's start time, bank state, and any <code>⏳ Delayed</code> badge explaining why it didn't fire sooner (resources / supply / producer / tech).</li>
               <li><strong>Insights</strong> panel highlights floating minerals/gas (income outpacing spend) and idle producers (a Barracks sat unused while you had minerals — usually means you should list more units in that window).</li>
-              <li><strong>Production efficiency</strong> Gantt shows each producer lane's busy/idle split. Aim for &lt;10% idle on Barracks/Factory/Starport once they're up.</li>
+              <li><strong>Idle producers</strong> Gantt shows each producer lane's busy/idle split. Aim for &lt;10% idle on Barracks/Factory/Starport once they're up.</li>
             </ul>
 
             <h4>Tips for getting the timing you want</h4>
@@ -117,47 +134,10 @@
             </ul>
 
             <h4>What's <em>not</em> modeled</h4>
-            <p>Worker travel time, Pylon power radius, Creep spread, larva-bank limits, and chrono-boost timing on individual units. Faster ladder speed (×1.4) is applied to all build times.</p>
+            <p>Worker travel time, Pylon power radius, and Creep spread. Faster ladder speed (×1.4) is applied to all build times. Chrono Boost, Warp Gate, and Queen injects <em>are</em> modeled — toggle them per step or add the relevant action.</p>
           </div>
-        </details>
-      </div>
-
-      <div class="controls-row">
-        <label>
-          Race:
-          <select id="forge-race">
-            <option value="terran">Terran</option>
-            <option value="protoss" selected>Protoss</option>
-            <option value="zerg">Zerg</option>
-          </select>
-        </label>
-        <label>
-          Preset:
-          <select id="forge-preset">
-            <option value="">— blank —</option>
-          </select>
-        </label>
-        <label style="align-self: end;">
-          <button id="forge-library" class="ghost" type="button" title="Open the build library — save, manage, and import builds">📚 Builds</button>
-          <input type="file" id="forge-load-input" accept=".json,application/json" style="display:none" />
-        </label>
-        <label style="align-self: end;">
-          <button id="forge-share" class="ghost" type="button" title="Copy build order as text or SALT, or import from SALT">⤴ Share</button>
-        </label>
-        <label style="align-self: end;">
-          <button id="forge-clear" class="ghost" type="button">Clear</button>
-        </label>
-        <label style="align-self: end; flex:1; text-align:right; color:var(--text-3); font-size:12px;">
-          <span id="forge-status">● Live — auto-runs as you edit</span>
-        </label>
-      </div>
-
-      <div class="controls-row" style="padding-top: 10px; padding-bottom: 10px;">
-        <label style="flex:1;">
-          Resource priority <span class="forge-priority-hint">(when steps fight for minerals/gas, higher class wins)</span>
-          <div id="forge-priority" class="forge-priority"></div>
-        </label>
-      </div>
+        </div>
+      <input type="file" id="forge-load-input" accept=".json,application/json" style="display:none" />
 
       <div class="forge-layout">
         <div class="forge-column forge-editor">
@@ -172,9 +152,12 @@
             </div>
 
             <div class="forge-action-row">
-              <button id="forge-add-swap" type="button" class="ghost" title="Add an addon swap step (Terran)">↔ Swap</button>
-              <button id="forge-fill-workers" type="button" class="ghost" title="Insert workers into idle production gaps on your main building(s)">⛏ Fill workers</button>
-              <button id="forge-add-priority" type="button" class="ghost" title="Insert a priority-shift marker — steps after it use a different tier order">⚖ Priority shift</button>
+              <span class="forge-action-label">Markers</span>
+              <button id="forge-add-swap" type="button" class="ghost marker-btn" data-icon="swap" title="Add an addon swap step (Terran)"><span>Swap</span></button>
+              <button id="forge-add-priority" type="button" class="ghost marker-btn" data-icon="priority" title="Insert a resource-priority change — steps after it use a different priority order"><span>Priority</span></button>
+              <button id="forge-add-gas" type="button" class="ghost marker-btn" data-icon="gas" title="Move workers between minerals and gas at this point in the build"><span>Gas</span></button>
+              <button id="forge-add-idle" type="button" class="ghost marker-btn" data-icon="idle" title="Mark workers as away (scouting, proxies, harass denial)"><span>Idle</span></button>
+              <button id="forge-add-tumour" type="button" class="ghost marker-btn" data-icon="tumour" title="Queen lays a Creep Tumour — spends 25 Queen energy, which can delay the next inject"><span>Tumour</span></button>
               <div id="forge-quick-add" class="forge-quick-add"></div>
             </div>
 
@@ -203,6 +186,21 @@
               <span class="density-icon density-icon-comfy">≡</span>
               <span class="density-icon density-icon-compact">═</span>
             </button>
+            <details class="forge-options-disclosure">
+              <summary title="Simulation options"><svg class="ui-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h11"/><path d="M4 12h7"/><path d="M4 17h14"/><circle cx="18" cy="7" r="2"/><circle cx="14" cy="12" r="2"/></svg><span>Options</span></summary>
+              <div class="forge-options-body">
+                <label class="toggle forge-strict-toggle" title="Force each step to wait for the one above it — a literal top-to-bottom sequence. Off (default) = realistic parallel production.">
+                  <input type="checkbox" id="forge-strict-order" />
+                  <span>Strict order — each step waits for the previous one</span>
+                </label>
+                <div class="forge-options-divider"></div>
+                <div class="forge-priority-block">
+                  <span class="forge-priority-hint">Resource priority — when steps compete for minerals or gas, the higher class spends first. Drag to reorder.</span>
+                  <div id="forge-priority" class="forge-priority"></div>
+                </div>
+              </div>
+            </details>
+            <button id="forge-clear" class="ghost forge-clear-btn" type="button" title="Remove every step and start a blank build">Clear</button>
           </div>
 
           <div id="forge-list" class="forge-list"></div>

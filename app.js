@@ -5,6 +5,10 @@
 (() => {
   'use strict';
 
+  // Shown in the header so users know how current the tool is. Bump when the
+  // data tables or simulator mechanics change.
+  const LAST_UPDATED = '2026-06-03';
+
   const state = {
     mode: 'forge',
     realTime: false,
@@ -19,7 +23,9 @@
     windowBasis: 'game',
     refRace: 'terran',
     forgeRace: 'protoss',
-    forgeOrder: [],       // [{entityId, repeat}]
+    forgeMode: 'live',    // 'live' | 'ptr' — which economy ruleset to simulate
+    forgeStrictOrder: false, // true = each step waits for the previous one (literal sequence)
+    forgeOrder: [],       // [{entityId, repeat, pinSupply?, pinTime?}]
     forgeResult: null,    // { timeline, log, warnings, eft }
     forgeRecent: { terran: [], protoss: [], zerg: [] }, // race -> [entityId,…] most recent first
     forgeBrowseTab: 'unit', // 'unit' | 'building' | 'addon' | 'upgrade'
@@ -351,6 +357,41 @@
     const m = str.match(/^(\d+):(\d{1,2})(?:\.(\d+))?$/);
     if (!m) return null;
     return parseInt(m[1], 10) * 60 + parseInt(m[2], 10) + (m[3] ? parseFloat('0.' + m[3]) : 0);
+  }
+
+  // Set/edit/clear a timing pin on entity step `idx`. The pin makes the step
+  // fire no earlier than a SUPPLY count (plain integer, e.g. "16") OR a CLOCK
+  // time (mm:ss, e.g. "3:30"). Only one anchor is kept; the other is cleared.
+  // Blank input removes the pin entirely.
+  function promptPin(idx) {
+    const step = state.forgeOrder[idx];
+    if (!step || !step.entityId) return;
+    const cur = step.pinSupply != null ? String(step.pinSupply)
+      : step.pinTime != null ? fmtTime(step.pinTime) : '';
+    const ent = SC2_DATA.entities[step.entityId];
+    const raw = window.prompt(
+      `Pin “${ent?.name || step.entityId}” to a moment — it won't build before this.\n\n` +
+      `• A number is a SUPPLY count, e.g. 16\n` +
+      `• mm:ss is a GAME TIME, e.g. 3:30\n` +
+      `• Leave blank to remove the pin.`,
+      cur);
+    if (raw == null) return;  // cancelled
+    const val = raw.trim().replace(/^@/, '');
+    delete step.pinSupply;
+    delete step.pinTime;
+    if (val !== '') {
+      if (val.includes(':')) {
+        const t = parseTime(val);
+        if (t != null && t > 0) step.pinTime = Math.round(t);
+        else { alert('Could not read that time. Use mm:ss, e.g. 3:30.'); return; }
+      } else {
+        const s = parseInt(val, 10);
+        if (Number.isFinite(s) && s > 0) step.pinSupply = s;
+        else { alert('Could not read that supply count. Use a whole number, e.g. 16.'); return; }
+      }
+    }
+    renderForgeList();
+    scheduleForgeRun();
   }
 
   // ============================================================
@@ -895,6 +936,33 @@
     return urls;
   }
 
+  // Inline monochrome UI icons (stroke = currentColor, so they pick up the
+  // race accent automatically). Replaces the old emoji glyphs for a cleaner,
+  // consistent look. Each value is the inner SVG markup.
+  const UI_ICONS = {
+    builds:   '<path d="M4 7l8-4 8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 17l8 4 8-4"/>',
+    share:    '<path d="M12 15V4"/><path d="M8 8l4-4 4 4"/><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/>',
+    swap:     '<path d="M7 8h12"/><path d="M16 5l3 3-3 3"/><path d="M17 16H5"/><path d="M8 13l-3 3 3 3"/>',
+    priority: '<path d="M4 7h11"/><path d="M4 12h7"/><path d="M4 17h14"/><circle cx="18" cy="7" r="2"/><circle cx="14" cy="12" r="2"/>',
+    gas:      '<path d="M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z"/>',
+    idle:     '<path d="M9 5v14"/><path d="M15 5v14"/>',
+    tumour:   '<path d="M12 21v-7"/><path d="M12 14c0-3-2-5-5-5 0 3 2 5 5 5z"/><path d="M12 13c0-3 2-6 5-6 0 3-2 6-5 6z"/>',
+    pin:      '<path d="M12 21s-6-5.5-6-10a6 6 0 1 1 12 0c0 4.5-6 10-6 10z"/><circle cx="12" cy="11" r="2"/>',
+    chrono:   '<path d="M13 2L5 14h6l-2 8 8-12h-6l2-8z"/>',
+    weight:   '<path d="M12 4v16"/><path d="M5 8h14"/><path d="M5 8l-2 5a3 3 0 0 0 6 0L7 8z" fill="none"/><path d="M19 8l-2 5a3 3 0 0 0 6 0l-2-5z" fill="none"/>',
+    insights: '<path d="M9 18h6"/><path d="M10 21h4"/><path d="M12 3a6 6 0 0 0-4 10c.8.8 1 1.6 1 2h6c0-.4.2-1.2 1-2a6 6 0 0 0-4-10z"/>',
+    trend:    '<path d="M3 17l6-6 4 4 8-8"/><path d="M16 7h5v5"/>',
+    clock:    '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
+    copy:     '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
+    download: '<path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/>',
+    flask:    '<path d="M9 3h6"/><path d="M10 3v6l-5 8a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-8V3"/><path d="M7.5 14h9"/>',
+  };
+  function uiIcon(name, cls) {
+    const inner = UI_ICONS[name];
+    if (!inner) return '';
+    return `<svg class="ui-ico${cls ? ' ' + cls : ''}" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+  }
+
   // Walk a |-separated fallback list, swapping src on each error; if exhausted, reveal the glyph.
   const ICON_ONERROR = "var n=(this.dataset.fb||'').split('|').filter(Boolean);if(n.length){this.dataset.fb=n.slice(1).join('|');this.src=n[0];}else{this.parentElement.classList.add('icon-failed');}";
 
@@ -1026,6 +1094,8 @@
     try {
       localStorage.setItem(FORGE_STORAGE_KEY, JSON.stringify({
         race: state.forgeRace,
+        mode: state.forgeMode,
+        strictOrder: state.forgeStrictOrder,
         buildOrder: state.forgeOrder,
         recent: state.forgeRecent,
         priority: state.forgePriority,
@@ -1053,6 +1123,18 @@
   // result column's chart/Gantt/roster blocks.
   // ============================================================
   const UI_COLLAPSE_KEY = 'sc2-timings.ui.collapsed.v1';
+  // Sections that should start COLLAPSED for a first-time user — the heavy
+  // charts/tables, so the result column leads with the summary + issues +
+  // insights. Only consulted when the user has no saved preference for that
+  // section (see applyStoredCollapseStates): the moment they expand/collapse
+  // one, their choice is saved and wins forever.
+  const FORGE_DEFAULT_COLLAPSED = {
+    'forge-roster': true,
+    'forge-producer-util': true,
+    'forge-resources': true,
+    'forge-timeline': true,
+    'forge-stepdetail': true,
+  };
   function loadCollapseState() {
     try {
       const raw = localStorage.getItem(UI_COLLAPSE_KEY);
@@ -1073,8 +1155,12 @@
     const scope = root || document;
     for (const el of scope.querySelectorAll('.collapsible-section[data-section-id]')) {
       const id = el.dataset.sectionId;
-      if (s[id]) el.dataset.collapsed = 'true';
-      else el.dataset.collapsed = 'false';
+      // Saved user preference always wins; fall back to the first-run default
+      // only when there's no saved entry for this section.
+      const collapsed = Object.prototype.hasOwnProperty.call(s, id)
+        ? !!s[id]
+        : !!FORGE_DEFAULT_COLLAPSED[id];
+      el.dataset.collapsed = collapsed ? 'true' : 'false';
     }
   }
 
@@ -1102,18 +1188,48 @@
       const data = JSON.parse(raw);
       if (!data || !['terran', 'protoss', 'zerg'].includes(data.race)) return false;
       if (!Array.isArray(data.buildOrder)) return false;
-      // Re-validate each step against current data (in case data.js changed)
+      // Re-validate each step against current data (in case data.js changed).
+      // Weight is a per-step priority modifier (default 1, integer 1-5).
+      // Worker markers (worker_assign / worker_idle) carry their own params.
       const cleaned = [];
+      const cleanWeight = (w) => {
+        const n = parseInt(w, 10);
+        return (Number.isFinite(n) && n >= 1 && n <= 5) ? n : 1;
+      };
       for (const step of data.buildOrder) {
         if (step && step.kind === 'swap' && step.from && step.to) {
-          cleaned.push({ kind: 'swap', from: step.from, to: step.to });
+          cleaned.push({ kind: 'swap', from: step.from, to: step.to, weight: cleanWeight(step.weight) });
         } else if (step && step.kind === 'priority') {
           cleaned.push({ kind: 'priority', order: sanitizePriority(step.order) });
+        } else if (step && step.kind === 'worker_assign') {
+          const delta = parseInt(step.delta, 10);
+          if (Number.isFinite(delta) && delta !== 0) {
+            cleaned.push({ kind: 'worker_assign', delta, weight: cleanWeight(step.weight) });
+          }
+        } else if (step && step.kind === 'worker_idle') {
+          const count = Math.max(1, Math.min(22, parseInt(step.count, 10) || 1));
+          const duration = Math.max(0, Math.min(999, parseInt(step.duration, 10) || 0));
+          cleaned.push({ kind: 'worker_idle', count, duration, weight: cleanWeight(step.weight) });
+        } else if (step && step.kind === 'creep_tumour') {
+          cleaned.push({ kind: 'creep_tumour', weight: cleanWeight(step.weight) });
         } else if (step && step.entityId && SC2_DATA.entities[step.entityId]) {
-          cleaned.push({ entityId: step.entityId, repeat: Math.max(1, Math.min(50, step.repeat || 1)) });
+          // Optional timing pin — fire no earlier than a supply count OR a
+          // clock time (only one anchor active). Must be explicitly carried
+          // through; restore drops any field it doesn't copy.
+          const pinSupply = (Number.isInteger(step.pinSupply) && step.pinSupply > 0) ? step.pinSupply : undefined;
+          const pinTime = (Number.isFinite(step.pinTime) && step.pinTime > 0) ? step.pinTime : undefined;
+          cleaned.push({
+            entityId: step.entityId,
+            repeat: Math.max(1, Math.min(50, step.repeat || 1)),
+            weight: cleanWeight(step.weight),
+            ...(pinSupply ? { pinSupply } : pinTime ? { pinTime } : {}),
+            ...(step.chrono ? { chrono: true } : {}),
+          });
         }
       }
       state.forgeRace = data.race;
+      state.forgeMode = (data.mode === 'ptr') ? 'ptr' : 'live';
+      if (typeof data.strictOrder === 'boolean') state.forgeStrictOrder = data.strictOrder;
       state.forgeOrder = cleaned;
       state.forgePriority = sanitizePriority(data.priority);
       if (typeof data.paletteCompact === 'boolean') {
@@ -1208,14 +1324,29 @@
     }
     const cleaned = [];
     let skipped = 0;
+    const cleanWeight = (w) => {
+      const n = parseInt(w, 10);
+      return (Number.isFinite(n) && n >= 1 && n <= 5) ? n : 1;
+    };
     for (const step of data.buildOrder) {
       if (step && step.kind === 'swap' && step.from && step.to) {
-        cleaned.push({ kind: 'swap', from: step.from, to: step.to });
+        cleaned.push({ kind: 'swap', from: step.from, to: step.to, weight: cleanWeight(step.weight) });
       } else if (step && step.kind === 'priority') {
         cleaned.push({ kind: 'priority', order: sanitizePriority(step.order) });
+      } else if (step && step.kind === 'worker_assign') {
+        const delta = parseInt(step.delta, 10);
+        if (Number.isFinite(delta) && delta !== 0) {
+          cleaned.push({ kind: 'worker_assign', delta, weight: cleanWeight(step.weight) });
+        } else {
+          skipped++;
+        }
+      } else if (step && step.kind === 'worker_idle') {
+        const count = Math.max(1, Math.min(22, parseInt(step.count, 10) || 1));
+        const duration = Math.max(0, Math.min(999, parseInt(step.duration, 10) || 0));
+        cleaned.push({ kind: 'worker_idle', count, duration, weight: cleanWeight(step.weight) });
       } else if (step && step.entityId && SC2_DATA.entities[step.entityId]) {
         const repeat = Math.max(1, Math.min(50, parseInt(step.repeat, 10) || 1));
-        cleaned.push({ entityId: step.entityId, repeat });
+        cleaned.push({ entityId: step.entityId, repeat, weight: cleanWeight(step.weight) });
       } else {
         skipped++;
       }
@@ -1234,7 +1365,7 @@
     state.forgeOrder = buildOrder.map(s => ({ ...s }));
     state.forgePriority = sanitizePriority(priority);
     state.forgeResult = null;
-    document.getElementById('forge-preset').value = '';
+    { const _ps = document.getElementById('forge-preset'); if (_ps) _ps.value = ''; }
     renderForge();
     scheduleForgeRun();
   }
@@ -1299,8 +1430,8 @@
             <button type="button" class="library-filter-btn ${_libraryFilterRace === 'zerg' ? 'active' : ''}" data-race="zerg">Zerg</button>
           </div>
           <div class="library-actions-right">
-            <button type="button" class="ghost" data-act="import-replay" title="Read a .SC2Replay file and extract the first 5 minutes as a build">⛓ Import replay</button>
-            <button type="button" class="ghost" data-act="import-json">⤒ Import JSON</button>
+            <button type="button" class="ghost btn-ico" data-act="import-replay" title="Read a .SC2Replay file and extract the first 5 minutes as a build">${uiIcon('download')}<span>Import replay</span></button>
+            <button type="button" class="ghost btn-ico" data-act="import-json">${uiIcon('download')}<span>Import JSON</span></button>
             <input type="file" id="library-replay-input" accept=".SC2Replay" style="display:none" />
           </div>
         </div>
@@ -1845,8 +1976,8 @@
         </div>
 
         <div class="share-tabs" role="tablist">
-          <button type="button" class="share-tab active" data-tab="text">📋 Copy text</button>
-          <button type="button" class="share-tab" data-tab="salt">🧂 SALT</button>
+          <button type="button" class="share-tab active btn-ico" data-tab="text">${uiIcon('copy')}<span>Copy text</span></button>
+          <button type="button" class="share-tab btn-ico" data-tab="salt">${uiIcon('flask')}<span>SALT</span></button>
         </div>
 
         <!-- ----- Text tab ----- -->
@@ -1861,7 +1992,7 @@
           <textarea id="share-text-out" class="share-textarea share-textarea-tall" readonly rows="22"></textarea>
           <div class="share-actions">
             <span class="share-skipped" id="share-text-skipped"></span>
-            <button type="button" class="ghost" data-act="copy-text">📋 Copy to clipboard</button>
+            <button type="button" class="ghost btn-ico" data-act="copy-text">${uiIcon('copy')}<span>Copy to clipboard</span></button>
           </div>
         </div>
 
@@ -1877,7 +2008,7 @@
             <textarea id="share-salt-out" class="share-textarea share-mono" readonly rows="4"></textarea>
             <div class="share-actions">
               <span class="share-skipped" id="share-salt-skipped"></span>
-              <button type="button" class="ghost" data-act="copy-salt">📋 Copy SALT</button>
+              <button type="button" class="ghost btn-ico" data-act="copy-salt">${uiIcon('copy')}<span>Copy SALT</span></button>
             </div>
           </div>
           <div class="share-section">
@@ -2476,8 +2607,64 @@
     };
   }
 
+  // Reflect state.forgeMode onto the global Live/PTR segmented control.
+  function syncForgeModeToggle() {
+    const toggle = document.getElementById('global-mode');
+    if (!toggle) return;
+    for (const btn of toggle.querySelectorAll('.mode-tab')) {
+      btn.classList.toggle('active', btn.dataset.mode === state.forgeMode);
+    }
+  }
+
+  // Global race is the single source of truth: it drives every tab's race
+  // selection and the race-reactive theme. Per-tab race state is kept in sync
+  // so each tab renders the chosen race when shown.
+  // Reflect the active race onto the header's icon radio.
+  function syncGlobalRaceRadio() {
+    const group = document.getElementById('global-race');
+    if (!group) return;
+    for (const btn of group.querySelectorAll('.race-radio')) {
+      btn.setAttribute('aria-checked', btn.dataset.race === state.forgeRace ? 'true' : 'false');
+    }
+  }
+
+  // Briefly enable the colour-sweep transition, apply the new race theme, then
+  // drop the transition class so normal hovers stay snappy.
+  let _raceTransitionTimer = null;
+  function applyRaceTheme(race) {
+    document.body.dataset.race = race;
+    document.body.classList.add('race-transition');
+    if (_raceTransitionTimer) clearTimeout(_raceTransitionTimer);
+    _raceTransitionTimer = setTimeout(() => document.body.classList.remove('race-transition'), 650);
+  }
+
+  function setGlobalRace(race, opts = {}) {
+    if (!['terran', 'protoss', 'zerg'].includes(race)) return;
+    state.forgeRace = race;
+    state.scoutRace = race;
+    state.windowRace = race;
+    state.refRace = race;
+    state.explorerPickerRace = race;
+    applyRaceTheme(race);
+    syncGlobalRaceRadio();
+    if (opts.clearForge) {
+      state.forgeOrder = [];
+      state.forgeResult = null;
+    }
+    renderActive();
+    persistForge();
+  }
+
   function renderForge() {
-    document.getElementById('forge-race').value = state.forgeRace;
+    syncGlobalRaceRadio();
+    document.body.dataset.race = state.forgeRace;   // race-reactive accent theming
+    syncForgeModeToggle();
+    // Race-specific marker buttons: Creep Tumour is Zerg-only, Addon Swap is
+    // Terran-only. Hide the ones that don't apply to the current race.
+    const tumourBtn = document.getElementById('forge-add-tumour');
+    if (tumourBtn) tumourBtn.style.display = state.forgeRace === 'zerg' ? '' : 'none';
+    const swapBtn2 = document.getElementById('forge-add-swap');
+    if (swapBtn2) swapBtn2.style.display = state.forgeRace === 'terran' ? '' : 'none';
     populateForgePresets();
     populateForgeAddDropdown();
     renderForgePriority();
@@ -2800,6 +2987,7 @@
 
   function populateForgePresets() {
     const select = document.getElementById('forge-preset');
+    if (!select) return;   // preset dropdown was removed from the UI
     const presets = FORGE_PRESETS[state.forgeRace] || {};
     select.innerHTML = '<option value="">— blank —</option>';
     for (const name of Object.keys(presets)) {
@@ -2833,6 +3021,18 @@
       }
       select.appendChild(og);
     }
+  }
+
+  // Short "lane" label for the producer that ties up a step's slot — the
+  // readability cue that explains why two builds can be equivalent even when
+  // their list order differs (independent lanes run in parallel). Worker-built
+  // buildings occupy no producer lane, so they get no tag.
+  function forgeLaneLabel(e) {
+    if (!e) return '';
+    const host = e.upgradeFrom || e.producedBy;
+    if (!host) return '';                       // worker-built building → no lane
+    const he = SC2_DATA.entities[host];
+    return he ? he.name : '';
   }
 
   function renderForgeList() {
@@ -2895,7 +3095,7 @@
           const niceWhen = fmtTime(stepResult.wouldFireAt);
           const tip = `Could have fired at ${niceWhen}; blocked by ${stepResult.blockedBy} until ${fmtTime(stepResult.start)}.`;
           const cls = (isResources || isProducer) ? 'forge-delay forge-delay-soft' : 'forge-delay';
-          delayLine = `<div class="${cls}" title="${tip}">⏳ Delayed ${delay.toFixed(0)}s by ${stepResult.blockedBy} (would have fired at ${niceWhen})</div>`;
+          delayLine = `<div class="${cls}" title="${tip}">${uiIcon('clock')} Delayed ${delay.toFixed(0)}s by ${stepResult.blockedBy} (would have fired at ${niceWhen})</div>`;
         }
       }
       // Compact mode shows only time + supply per row — the user asked
@@ -2903,10 +3103,50 @@
       // income rates, delay reasons) stays available in the comfortable
       // view and via the row's title attribute below.
       const compact = !!state.forgeListCompact;
+      // Weight chip — every row gets one. Click cycles 1→2→3→4→5→1. Only
+      // the bumped state visually pops; weight=1 stays muted so the default
+      // build doesn't look noisy. Higher weight wins among simultaneously
+      // queueable candidates, so use this to "hold the bank" for OC over
+      // CC, or a Stargate over routine Probe production.
+      const stepWeight = step.weight || 1;
+      const weightChipCls = stepWeight > 1 ? 'forge-weight forge-weight-bump' : 'forge-weight';
+      const weightChip = `<button type="button" class="${weightChipCls}" data-act="weight" title="Priority weight (${stepWeight}). Higher fires first among same-time candidates. Click to cycle 1→5.">${uiIcon('weight')}<span>${stepWeight}</span></button>`;
+      // Timing pin chip — pin a step to fire no earlier than a supply count
+      // (@16) OR a clock time (@3:30). Muted until set, like the weight chip.
+      const isPinned = step.pinSupply != null || step.pinTime != null;
+      const pinLabel = step.pinSupply != null ? `@${step.pinSupply}`
+        : step.pinTime != null ? `@${fmtTime(step.pinTime)}` : '';
+      const pinTitle = isPinned
+        ? `Pinned to fire no earlier than ${step.pinSupply != null ? 'supply ' + step.pinSupply : fmtTime(step.pinTime)}. Click to edit or clear.`
+        : 'Pin a timing — fire no earlier than a supply count (e.g. 16) or a clock time (e.g. 3:30). Click to set.';
+      const pinChip = `<button type="button" class="${isPinned ? 'forge-pin forge-pin-set' : 'forge-pin'}" data-act="pin" title="${pinTitle}">${uiIcon('pin')}${pinLabel ? '<span>' + pinLabel + '</span>' : ''}</button>`;
+      // Chrono Boost chip (Protoss only) — toggle to spend 50 Nexus energy
+      // accelerating this step. Only meaningful on chrono-able entities.
+      const entForChrono = SC2_DATA.entities[step.entityId];
+      const chronoable = state.forgeRace === 'protoss' && entForChrono
+        && (entForChrono.type === 'unit' || entForChrono.type === 'upgrade' || entForChrono.type === 'addon');
+      const chronoOn = !!step.chrono;
+      // Three states: this step CAST chrono (full bolt), this step only caught
+      // the SPILLOVER of an earlier cast on the same building (half-lit bolt),
+      // or no chrono (muted).
+      const chronoSpill = !chronoOn && !!(stepResult && stepResult.chronoed);
+      const chronoCls = chronoOn ? 'forge-chrono forge-chrono-set'
+        : chronoSpill ? 'forge-chrono forge-chrono-spill' : 'forge-chrono';
+      const chronoTitle = chronoOn ? 'Chrono-boosted here (spends 50 Nexus energy when available). Click to turn off.'
+        : chronoSpill ? 'Caught the leftover Chrono Boost from an earlier cast on this building. Click to also cast here.'
+        : 'Chrono Boost this step — spends 50 Nexus energy to finish it sooner. Click to enable.';
+      const chronoChip = chronoable
+        ? `<button type="button" class="${chronoCls}" data-act="chrono" title="${chronoTitle}">${uiIcon('chrono')}</button>`
+        : '';
+      // The two values players scan most are the timestamp and the supply at
+      // that moment — so the time is bolded and the supply gets a small chip,
+      // with the economy detail (banks, income rates) kept muted alongside.
+      const timeStr = `<span class="forge-state-time">${fmtTimeBoth(queuedAt)}</span>`;
+      const supplyChip = `<span class="forge-state-supply">${res ? res.supply_used + '/' + res.supply_max : ''}</span>`;
       const stateLine = res
         ? (compact
-            ? `<span class="forge-state">${fmtTimeBoth(queuedAt)} · ${res.supply_used}/${res.supply_max}</span>`
-            : `<span class="forge-state">${fmtTimeBoth(queuedAt)} · ${Math.round(res.minerals)}m / ${Math.round(res.gas)}g · ${res.supply_used}/${res.supply_max} sup · ${res.mineral_rate.toFixed(1)} m/s${res.gas_rate > 0 ? ' · ' + res.gas_rate.toFixed(1) + ' g/s' : ''}</span>${delayLine}`)
+            ? `<span class="forge-state">${timeStr} ${supplyChip}</span>`
+            : `<span class="forge-state">${timeStr} ${supplyChip} <span class="forge-state-econ">${Math.round(res.minerals)}m / ${Math.round(res.gas)}g · ${(res.mineral_rate * 60).toFixed(0)} m/min${res.gas_rate > 0 ? ' · ' + (res.gas_rate * 60).toFixed(0) + ' g/min' : ''}</span></span>${delayLine}`)
         : warning
           ? `<span class="forge-state forge-state-warn" title="${reasonOnly}">⚠ ${reasonOnly}</span>`
           : '<span class="forge-state forge-state-pending">— not yet executed —</span>';
@@ -2931,15 +3171,16 @@
             <div class="forge-num">${i + 1}</div>
             <div class="forge-action">
               <div class="forge-action-main">
-                <span class="entity-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);">⚖</span>
+                <span class="entity-icon marker-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);font-size:15px;">${uiIcon('priority')}</span>
                 <div class="forge-action-text">
-                  <div class="forge-name">Priority shift</div>
+                  <div class="forge-name">Resource priority change</div>
                   <div class="forge-priority-inline">${chips}</div>
                 </div>
               </div>
               <div class="forge-cost">marker</div>
             </div>
             <div class="forge-controls">
+              ${weightChip}
               <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
             </div>
           </div>
@@ -2956,7 +3197,7 @@
             <div class="forge-num">${i + 1}</div>
             <div class="forge-action">
               <div class="forge-action-main">
-                <span class="entity-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);">↔</span>
+                <span class="entity-icon marker-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);font-size:15px;">${uiIcon('swap')}</span>
                 <div class="forge-action-text">
                   <div class="forge-name">Swap: ${fromE?.name || step.from} → ${toE?.name || step.to}</div>
                   ${stateLine}
@@ -2965,6 +3206,90 @@
               <div class="forge-cost">~5s</div>
             </div>
             <div class="forge-controls">
+              ${weightChip}
+              <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
+            </div>
+          </div>
+        `;
+      }
+
+      // Worker assign (gas push/pull) row
+      if (step.kind === 'worker_assign') {
+        const delta = step.delta || 0;
+        const abs = Math.abs(delta);
+        const dir = delta > 0 ? 'onto' : 'off';
+        const label = `Move ${abs} worker${abs > 1 ? 's' : ''} ${dir} gas`;
+        return `
+          <div class="forge-row forge-row-marker" data-idx="${i}" draggable="true">
+            <div class="forge-handle" title="Drag to reorder">⋮⋮</div>
+            <div class="forge-num">${i + 1}</div>
+            <div class="forge-action">
+              <div class="forge-action-main">
+                <span class="entity-icon marker-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);font-size:15px;">${uiIcon('gas')}</span>
+                <div class="forge-action-text">
+                  <div class="forge-name">${label}</div>
+                  ${stateLine}
+                </div>
+              </div>
+              <div class="forge-cost">marker</div>
+            </div>
+            <div class="forge-controls">
+              ${weightChip}
+              <input class="forge-repeat" type="number" min="-12" max="12" value="${delta}" title="Worker count (positive = onto gas, negative = off)" data-act="worker-delta" />
+              <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
+            </div>
+          </div>
+        `;
+      }
+
+      // Worker idle (scout / proxy / harass denial) row
+      if (step.kind === 'worker_idle') {
+        const count = step.count || 1;
+        const duration = step.duration || 0;
+        const durLabel = duration > 0 ? `for ${duration}s` : 'permanently';
+        const label = `${count} worker${count > 1 ? 's' : ''} idle ${durLabel}`;
+        return `
+          <div class="forge-row forge-row-marker" data-idx="${i}" draggable="true">
+            <div class="forge-handle" title="Drag to reorder">⋮⋮</div>
+            <div class="forge-num">${i + 1}</div>
+            <div class="forge-action">
+              <div class="forge-action-main">
+                <span class="entity-icon marker-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);font-size:15px;">${uiIcon('idle')}</span>
+                <div class="forge-action-text">
+                  <div class="forge-name">${label}</div>
+                  ${stateLine}
+                </div>
+              </div>
+              <div class="forge-cost">marker</div>
+            </div>
+            <div class="forge-controls">
+              ${weightChip}
+              <input class="forge-repeat" type="number" min="1" max="22" value="${count}" title="Worker count" data-act="idle-count" />
+              <input class="forge-repeat" type="number" min="0" max="999" value="${duration}" title="Duration in seconds (0 = permanent)" data-act="idle-duration" />
+              <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
+            </div>
+          </div>
+        `;
+      }
+
+      // Creep tumour marker (Zerg) — spends 25 Queen energy at this point.
+      if (step.kind === 'creep_tumour') {
+        return `
+          <div class="forge-row forge-row-marker" data-idx="${i}" draggable="true">
+            <div class="forge-handle" title="Drag to reorder">⋮⋮</div>
+            <div class="forge-num">${i + 1}</div>
+            <div class="forge-action">
+              <div class="forge-action-main">
+                <span class="entity-icon marker-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);font-size:15px;">${uiIcon('tumour')}</span>
+                <div class="forge-action-text">
+                  <div class="forge-name">Creep tumour <span class="forge-lane">−25 Queen energy</span></div>
+                  ${stateLine}
+                </div>
+              </div>
+              <div class="forge-cost">marker</div>
+            </div>
+            <div class="forge-controls">
+              ${weightChip}
               <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
             </div>
           </div>
@@ -2976,6 +3301,10 @@
       const name = e?.name || step.entityId;
       const repeat = step.repeat || 1;
       const cost = e ? `${e.minerals || 0}m${e.gas ? ' · ' + e.gas + 'g' : ''}` : '';
+      const laneLabel = forgeLaneLabel(e);
+      const laneTag = (laneLabel && !compact)
+        ? `<span class="forge-lane" title="Production lane — steps on different lanes build in parallel, so reordering across lanes may not change timing">${laneLabel}</span>`
+        : '';
       return `
         <div class="forge-row" data-idx="${i}" draggable="true">
           <div class="forge-handle" title="Drag to reorder">⋮⋮</div>
@@ -2984,13 +3313,16 @@
             <div class="forge-action-main">
               ${e ? iconHtml(e, { size: 26 }) : ''}
               <div class="forge-action-text">
-                <div class="forge-name">${name}</div>
+                <div class="forge-name">${name}${laneTag}</div>
                 ${stateLine}
               </div>
             </div>
             <div class="forge-cost">${cost}</div>
           </div>
           <div class="forge-controls">
+            ${chronoChip}
+            ${pinChip}
+            ${weightChip}
             <input class="forge-repeat" type="number" min="1" max="50" value="${repeat}" title="Repeat count" data-act="repeat" />
             <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
           </div>
@@ -3032,6 +3364,44 @@
         }
       });
     }
+    // Inline editors for worker markers — same change-only pattern as repeat
+    // so typing doesn't re-render mid-keystroke and steal focus.
+    for (const el of root.querySelectorAll('input[data-act="worker-delta"]')) {
+      el.addEventListener('change', (ev) => {
+        const row = ev.target.closest('.forge-row');
+        const idx = parseInt(row.dataset.idx, 10);
+        const v = parseInt(ev.target.value, 10);
+        if (Number.isFinite(v) && v !== 0) {
+          state.forgeOrder[idx].delta = v;
+          scheduleForgeRun();
+          renderForgeList();
+        }
+      });
+    }
+    for (const el of root.querySelectorAll('input[data-act="idle-count"]')) {
+      el.addEventListener('change', (ev) => {
+        const row = ev.target.closest('.forge-row');
+        const idx = parseInt(row.dataset.idx, 10);
+        const v = parseInt(ev.target.value, 10);
+        if (v > 0 && v <= 22) {
+          state.forgeOrder[idx].count = v;
+          scheduleForgeRun();
+          renderForgeList();
+        }
+      });
+    }
+    for (const el of root.querySelectorAll('input[data-act="idle-duration"]')) {
+      el.addEventListener('change', (ev) => {
+        const row = ev.target.closest('.forge-row');
+        const idx = parseInt(row.dataset.idx, 10);
+        const v = parseInt(ev.target.value, 10);
+        if (v >= 0 && v <= 999) {
+          state.forgeOrder[idx].duration = v;
+          scheduleForgeRun();
+          renderForgeList();
+        }
+      });
+    }
     for (const el of root.querySelectorAll('button[data-act]')) {
       el.addEventListener('click', (ev) => {
         const row = ev.target.closest('.forge-row');
@@ -3039,6 +3409,22 @@
         const act = ev.target.dataset.act;
         if (act === 'delete') {
           state.forgeOrder.splice(idx, 1);
+          renderForgeList();
+          scheduleForgeRun();
+        } else if (act === 'weight') {
+          // Cycle 1→2→3→4→5→1. The default (1) keeps things behaving
+          // like an unweighted build; only push higher when you want a
+          // specific decision to "hold the bank" against routine spends.
+          const cur = state.forgeOrder[idx].weight || 1;
+          const next = cur >= 5 ? 1 : cur + 1;
+          state.forgeOrder[idx].weight = next;
+          renderForgeList();
+          scheduleForgeRun();
+        } else if (act === 'pin') {
+          promptPin(idx);
+        } else if (act === 'chrono') {
+          const s = state.forgeOrder[idx];
+          if (s.chrono) delete s.chrono; else s.chrono = true;
           renderForgeList();
           scheduleForgeRun();
         } else if (act === 'prio-up' || act === 'prio-down') {
@@ -3179,6 +3565,15 @@
             break;
           }
         }
+      } else if (step.kind === 'worker_assign' || step.kind === 'worker_idle') {
+        const markerId = step.kind === 'worker_assign' ? '_worker_assign' : '_worker_idle';
+        for (let j = 0; j < timeline.length; j++) {
+          if (!consumed[j] && timeline[j].id === markerId) {
+            firstFor = timeline[j];
+            consumed[j] = true;
+            break;
+          }
+        }
       } else {
         const repeat = step.repeat || 1;
         let found = 0;
@@ -3242,103 +3637,15 @@
     });
   }
 
-  // Insert worker steps into the build to fill idle production time on the
-  // main building (CC/OC/PF for Terran, Nexus for Protoss). Iteratively:
-  //   - run the sim,
-  //   - find the first main-lane gap that's >= one worker build time,
-  //   - insert a worker at the position where the prior step's commit time
-  //     is the latest one still <= gap start (so the new worker lands in
-  //     the gap without forcing later steps to wait on it),
-  //   - repeat until no gap fits or the saturation cap is reached.
-  // Zerg drones come from larva rather than a producer slot, so they need
-  // a different mechanism — skipped for now.
-  function fillWorkers() {
-    const race = state.forgeRace;
-    if (race === 'zerg') {
-      alert('Fill workers is not yet supported for Zerg — drones come from larva, not a producer slot.');
-      return;
-    }
-    const cfg = SC2_SIM.RACE_CFG[race];
-    const workerId = cfg.worker;
-    const mainId = cfg.main;
-    const workerEntity = SC2_DATA.entities[workerId];
-    if (!workerEntity) return;
-    const workerBuildTime = workerEntity.buildTime;
-    const SAFETY_PASSES = 60;
-
-    let inserted = 0;
-    for (let pass = 0; pass < SAFETY_PASSES; pass++) {
-      // Saturation cap: ~16 workers per base + a few extras for transfers.
-      let workersInBuild = cfg.start_workers;
-      let basesInBuild = 1;
-      for (const step of state.forgeOrder) {
-        if (step.entityId === workerId) workersInBuild += step.repeat || 1;
-        if (step.entityId === mainId) basesInBuild += step.repeat || 1;
-      }
-      const cap = basesInBuild * 16 + 4;
-      if (workersInBuild >= cap) break;
-
-      const r = SC2_SIM.simulateBuildOrder(state.forgeOrder, { race });
-      if (!r || !r.eft) break;
-
-      // Find the first main-lane idle gap that fits a worker build.
-      const util = computeProducerUtilization(r.timeline, r.eft, race);
-      const main = util.find(u => u.producer.id === mainId);
-      if (!main) break;
-      let gap = null;
-      for (const lane of main.lanes) {
-        if (lane.type !== 'main') continue;
-        const aliveEnd = lane.tDeath === Infinity ? r.eft : lane.tDeath;
-        let cursor = lane.tAvail;
-        const ivs = lane.intervals.slice().sort((a, b) => a.start - b.start);
-        for (const iv of ivs) {
-          if (iv.start - cursor >= workerBuildTime - 1e-6) {
-            gap = { start: cursor };
-            break;
-          }
-          if (iv.end > cursor) cursor = iv.end;
-        }
-        if (!gap && aliveEnd - cursor >= workerBuildTime - 1e-6) {
-          gap = { start: cursor };
-        }
-        if (gap) break;
-      }
-      if (!gap) break;
-
-      // Insert at the position where the prior step's commit is the
-      // latest still <= gap.start. That puts the new worker in the gap
-      // without raising later steps' priorNonSwapMax above what it was.
-      const stepResults = mapStepsToTimeline(state.forgeOrder, r.timeline);
-      let insertPos = state.forgeOrder.length;
-      for (let i = 0; i < state.forgeOrder.length; i++) {
-        const t = stepResults[i]?.start;
-        if (t == null) continue;
-        if (t > gap.start + 1e-6) { insertPos = i; break; }
-      }
-
-      state.forgeOrder.splice(insertPos, 0, { entityId: workerId, repeat: 1 });
-      inserted++;
-    }
-
-    if (inserted > 0) {
-      renderForgeList();
-      renderForgeQuickAdd();
-      scheduleForgeRun();
-    } else {
-      // No gaps found — either saturated, or production is already packed.
-      const status = document.getElementById('forge-status');
-      if (status) {
-        const prev = status.textContent;
-        status.textContent = `No fillable worker gaps found.`;
-        setTimeout(() => { if (status.textContent.startsWith('No fillable')) status.textContent = prev; }, 2500);
-      }
-    }
-  }
-
   function runForge() {
     const result = SC2_SIM.simulateBuildOrder(state.forgeOrder, {
       race: state.forgeRace,
       priorityOrder: state.forgePriority,
+      // PTR 5.0.16 ruleset: 8 starting workers, 13/13/12 start supply, and the
+      // unit/building cost & supply overrides in SC2_DATA.ptr.
+      ptr: state.forgeMode === 'ptr',
+      // Strict order: each step waits for the previous one (literal sequence).
+      strictOrder: state.forgeStrictOrder,
     });
     state.forgeResult = result;
     renderForgeResult();
@@ -3399,8 +3706,8 @@
     const idleGaps = detectProducerIdleGaps(producerUtil, r.sim.history);
     const insightItems = [
       ...floats.map(f => ({
-        title: `Floated ${f.peak.toFixed(0)} ${f.label} for ${f.duration.toFixed(0)}s, peaking at ${fmtTime(f.peakAt)}.`,
-        body: `📈 Floating ${f.label}: held ${f.peak.toFixed(0)}+ for ${f.duration.toFixed(0)}s starting ${fmtTime(f.start)} — economy outpacing spend.`,
+        title: `Banked ${f.peak.toFixed(0)} unspent ${f.label} for ${f.duration.toFixed(0)}s, peaking at ${fmtTime(f.peakAt)}.`,
+        body: `${uiIcon('trend')} Unspent ${f.label}: held ${f.peak.toFixed(0)}+ for ${f.duration.toFixed(0)}s starting ${fmtTime(f.start)} — income outpacing spend.`,
       })),
       ...idleGaps.map(g => {
         // "supply" cause means the slot was free but supply was at cap,
@@ -3416,13 +3723,13 @@
           : 'List another unit or upgrade for this producer at this time.';
         return {
           title: `${g.producerName} sat idle from ${fmtTime(g.start)} to ${fmtTime(g.end)} — ${reason}. ${fix}`,
-          body: `⏸ Idle ${g.producerName}: ${g.duration.toFixed(0)}s gap starting ${fmtTime(g.start)} — ${reason}.`,
+          body: `${uiIcon('idle')} Idle ${g.producerName}: ${g.duration.toFixed(0)}s gap starting ${fmtTime(g.start)} — ${reason}.`,
         };
       }),
     ];
     const insightsHtml = insightItems.length
       ? `<div class="forge-insights">
-          <h4>💡 Insights</h4>
+          <h4>${uiIcon('insights')} Insights</h4>
           ${insightItems.map(it => `<div class="forge-insight" title="${it.title}">${it.body}</div>`).join('')}
         </div>`
       : '';
@@ -3433,7 +3740,7 @@
           <span class="target-name">Build outcome</span>
           <div class="headline-times">
             <div>
-              <span class="time-label">Last ${state.realTime ? 'real' : 'game'}</span>
+              <span class="time-label">Last unit (${state.realTime ? 'real' : 'game'})</span>
               <span class="time-big">${fmtTimeBoth(r.eft)}</span>
             </div>
             <div>
@@ -3453,7 +3760,7 @@
           ${finalState ? `
             <span class="cost-pill" style="background: var(--bg-3); color: var(--text-1);"><span class="label">End m/g</span> ${Math.round(finalState.minerals)}m · ${Math.round(finalState.gas)}g</span>
             <span class="cost-pill supply"><span class="label">End sup</span> ${finalState.supply_used}/${finalState.supply_max}</span>
-            <span class="cost-pill" style="background: var(--bg-3); color: var(--text-2);"><span class="label">Income</span> ${finalState.mineral_rate.toFixed(1)} m/s · ${finalState.gas_rate.toFixed(1)} g/s</span>
+            <span class="cost-pill" style="background: var(--bg-3); color: var(--text-2);"><span class="label">Income</span> ${(finalState.mineral_rate * 60).toFixed(0)} m/min · ${(finalState.gas_rate * 60).toFixed(0)} g/min</span>
           ` : ''}
         </div>
         ${warningsHtml}
@@ -3462,7 +3769,7 @@
         ${renderProducerUtilization(producerUtil, r.eft, r.sim.history, r.timeline)}
         <div class="path-section collapsible-section" data-section-id="forge-resources">
           <h3>Resources over time</h3>
-          ${renderResourceChart(r.sim.history, r.eft)}
+          ${renderResourceChart(r.sim.history, r.eft, r.timeline)}
         </div>
         <div class="path-section collapsible-section" data-section-id="forge-timeline">
           <h3>Build timeline</h3>
@@ -3478,9 +3785,88 @@
     // Wire up the chart hover after DOM is in place
     const chartWrap = root.querySelector('[data-chart="resources"]');
     if (chartWrap && r.sim.history && r.sim.history.length > 1) {
-      attachChartHover(chartWrap, r.sim.history, r.eft);
+      attachChartHover(chartWrap, r.sim.history, r.eft, r.timeline);
     }
+    attachProdGanttTooltip(root);
     restoreScroll();
+  }
+
+  // Custom hover tooltip for the production Gantt — replaces the native
+  // `title` (slow, unstyled, plaintext) with a fast styled bubble that
+  // shows rich HTML. One singleton element per session is appended to
+  // body and re-positioned per hover; delegated mouseover keeps event
+  // wiring O(1) regardless of segment count.
+  let _prodTipEl = null;
+  function getProdTip() {
+    if (_prodTipEl) return _prodTipEl;
+    const el = document.createElement('div');
+    el.className = 'prod-util-tooltip';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    _prodTipEl = el;
+    return el;
+  }
+  function attachProdGanttTooltip(root) {
+    const wrap = root.querySelector('.prod-util-scroll');
+    if (!wrap) return;
+    const tip = getProdTip();
+    let showTimer = null;
+    let hideTimer = null;
+    let current = null;
+
+    function position(target) {
+      const r = target.getBoundingClientRect();
+      const tipR = tip.getBoundingClientRect();
+      // Prefer above the segment; fall back below if there's no room.
+      let top = window.scrollY + r.top - tipR.height - 8;
+      if (top < window.scrollY + 8) top = window.scrollY + r.bottom + 8;
+      // Center horizontally on the segment but keep on-screen with an
+      // 8px viewport margin.
+      let left = window.scrollX + r.left + r.width / 2 - tipR.width / 2;
+      const maxLeft = window.scrollX + document.documentElement.clientWidth - tipR.width - 8;
+      if (left > maxLeft) left = maxLeft;
+      if (left < window.scrollX + 8) left = window.scrollX + 8;
+      tip.style.top = top + 'px';
+      tip.style.left = left + 'px';
+    }
+    function show(target) {
+      const html = target.getAttribute('data-prod-tip');
+      if (!html) return;
+      tip.innerHTML = html;
+      tip.style.display = '';
+      position(target);
+      current = target;
+    }
+    function hide() {
+      tip.style.display = 'none';
+      current = null;
+    }
+
+    wrap.addEventListener('mouseover', (e) => {
+      const target = e.target.closest('[data-prod-tip]');
+      if (!target || target === current) return;
+      clearTimeout(hideTimer);
+      clearTimeout(showTimer);
+      // 80ms feels instant but suppresses flicker as the cursor crosses
+      // multiple segments while panning.
+      showTimer = setTimeout(() => show(target), 80);
+    });
+    wrap.addEventListener('mouseout', (e) => {
+      const target = e.target.closest('[data-prod-tip]');
+      if (!target) return;
+      // Only hide if the cursor is genuinely leaving the segment (not
+      // moving onto a child); a small delay also avoids flicker between
+      // adjacent siblings.
+      if (e.relatedTarget && target.contains(e.relatedTarget)) return;
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(hide, 60);
+    });
+    wrap.addEventListener('mouseleave', () => {
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      hide();
+    });
   }
 
   // Bucket completed timeline actions by entity and group (army / tech / upgrades).
@@ -3505,9 +3891,13 @@
       if (e.type === 'unit') return groups.army;
       return null;
     };
+    // Starting workers depend on the ruleset: 12 on Live, 8 on PTR 5.0.16.
+    const ptrStartWorkers = (state.forgeMode === 'ptr' && SC2_DATA.ptr) ? SC2_DATA.ptr.startWorkers : null;
     for (const seed of (RACE_STARTING_ROSTER[race] || [])) {
       const b = bucketFor(SC2_DATA.entities[seed.id]);
-      if (b) b.set(seed.id, (b.get(seed.id) || 0) + seed.count);
+      if (!b) continue;
+      const count = (ptrStartWorkers != null && seed.group === 'workers') ? ptrStartWorkers : seed.count;
+      b.set(seed.id, (b.get(seed.id) || 0) + count);
     }
     // Unit morphs (Baneling←Zergling, Ravager←Roach, Lurker←Hydra,
     // Brood Lord←Corruptor, Overseer←Overlord, Archon←Templar) are
@@ -3753,6 +4143,12 @@
         busyIntervals.push({
           start: item.start, end: item.end,
           name: ie.name, kind: item.kind, id: item.id,
+          // The sim tagged each timeline entry with the addon class it
+          // routed through (e.g., 'barracks_techlab'). The lane-placement
+          // loop prefers lanes whose CURRENT addon matches this — so a
+          // Marauder routed through Tech Lab visually lands on the
+          // Tech-Labbed Barracks, not the Reactored one.
+          addonClass: item.addonClass || null,
         });
       }
       // Sort by start time, then prefer upgrades (so an OC at the same
@@ -3805,42 +4201,78 @@
         const swapToProd = isSwap ? rootOf(SC2_DATA.entities[iv.swapTo]?.producedBy) : null;
         const isSwapSource = isSwap && swapFromProd === producerId;
         const isSwapTarget = isSwap && swapToProd === producerId;
-        let placed = false;
-        for (let k = 0; k < lanes.length; k++) {
+        // Two-pass placement. Pass 1: prefer a lane whose CURRENT addon
+        // matches what the sim chose for this interval (iv.addonClass).
+        // Pass 2: fall back to any lane that satisfies the structural
+        // constraints (form / no-addon-for-addon-builds / etc.). This is
+        // why a Marauder routed through Tech Lab visually lands on the
+        // Tech-Labbed Barracks even when both Barracks are slot-free.
+        function laneEligible(k, iv, requireAddonMatch) {
           const lane = lanes[k];
-          if (laneFreeAt[k] > iv.start + 1e-6) continue;
-          if (iv.start >= lane.tDeath - 1e-9) continue;
-          if (upgradeSource && (lane.type !== 'main' || lane.form !== upgradeSource)) continue;
+          if (laneFreeAt[k] > iv.start + 1e-6) return false;
+          if (iv.start >= lane.tDeath - 1e-9) return false;
+          if (upgradeSource && (lane.type !== 'main' || lane.form !== upgradeSource)) return false;
           if (isAddonBuild) {
-            if (lane.type !== 'main') continue;
-            if (laneAddonAt(lane, iv.start) != null) continue;
+            if (lane.type !== 'main') return false;
+            if (laneAddonAt(lane, iv.start) != null) return false;
           }
           if (isSwap) {
-            if (lane.type !== 'main') continue;
+            if (lane.type !== 'main') return false;
             const cur = laneAddonAt(lane, iv.start);
-            // Pick the right side: source needs the swapFrom addon; target needs no addon.
             if (isSwapSource && isSwapTarget) {
-              // Same producer is both source & target — implausible but if
-              // it happens, treat as source.
-              if (cur !== iv.swapFrom) continue;
+              if (cur !== iv.swapFrom) return false;
             } else if (isSwapSource) {
-              if (cur !== iv.swapFrom) continue;
+              if (cur !== iv.swapFrom) return false;
             } else if (isSwapTarget) {
-              if (cur != null) continue;
+              if (cur != null) return false;
             }
           }
+          if (requireAddonMatch && iv.addonClass && !isAddonBuild && !isSwap && !upgradeSource) {
+            // For unit / upgrade / regular production, the sim's chosen
+            // addon class should match the lane's current addon. 'none'
+            // means "no addon Barracks"; 'barracks_techlab' means the
+            // lane must have a Tech Lab attached at iv.start.
+            const current = laneAddonAt(lane, iv.start);
+            if (iv.addonClass === 'none') {
+              if (current != null) return false;
+            } else if (current !== iv.addonClass) {
+              return false;
+            }
+          }
+          return true;
+        }
+        let placed = false;
+        // Pass 1: addon-class-matched lane
+        for (let k = 0; k < lanes.length; k++) {
+          if (!laneEligible(k, iv, true)) continue;
+          const lane = lanes[k];
           lane.intervals.push(iv);
           laneFreeAt[k] = iv.end;
           if (upgradeSource && lane.type === 'main') lane.form = iv.id;
-          if (isAddonBuild && lane.type === 'main') {
-            lane.addonChanges.push({ t: iv.end, form: iv.id });
-          }
+          if (isAddonBuild && lane.type === 'main') lane.addonChanges.push({ t: iv.end, form: iv.id });
           if (isSwap && lane.type === 'main') {
             if (isSwapSource) lane.addonChanges.push({ t: iv.end, form: null });
             if (isSwapTarget) lane.addonChanges.push({ t: iv.end, form: iv.swapTo });
           }
           placed = true;
           break;
+        }
+        // Pass 2: structural fit only (no addon-class match required)
+        if (!placed) {
+          for (let k = 0; k < lanes.length; k++) {
+            if (!laneEligible(k, iv, false)) continue;
+            const lane = lanes[k];
+            lane.intervals.push(iv);
+            laneFreeAt[k] = iv.end;
+            if (upgradeSource && lane.type === 'main') lane.form = iv.id;
+            if (isAddonBuild && lane.type === 'main') lane.addonChanges.push({ t: iv.end, form: iv.id });
+            if (isSwap && lane.type === 'main') {
+              if (isSwapSource) lane.addonChanges.push({ t: iv.end, form: null });
+              if (isSwapTarget) lane.addonChanges.push({ t: iv.end, form: iv.swapTo });
+            }
+            placed = true;
+            break;
+          }
         }
         if (!placed) {
           // Fallback: if no lane satisfied all the constraints we still
@@ -3876,6 +4308,92 @@
   }
 
   function isProducerFlagged(u) { return u.idlePct > 0.20 && u.idleSec > 10; }
+
+  // Escape the bare minimum needed to embed HTML inside a double-quoted
+  // attribute value. Don't encode <>; we want them to render as tags when
+  // the handler reads the attribute back and assigns it to innerHTML.
+  function escAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  }
+
+  // Find the most-recent history snapshot at-or-before time t. Used to
+  // show "what was the bank when this gap started?" so the user can
+  // confirm the diagnosis without scrubbing the resources chart.
+  function bankSnapshotAt(history, t) {
+    if (!Array.isArray(history) || !history.length) return null;
+    let best = history[0];
+    for (const h of history) {
+      if (h.t > t + 1e-6) break;
+      best = h;
+    }
+    return best;
+  }
+
+  function prodTipBusyHtml(iv, isOrphan, producerName, history) {
+    const e = SC2_DATA.entities[iv.id];
+    const cost = (iv.kind === 'swap')
+      ? '—'
+      : `${iv.mins || 0}m${iv.gas ? ' + ' + iv.gas + 'g' : ''}`;
+    const dur = (iv.end - iv.start);
+    const role = e?.type || (iv.kind === 'swap' ? 'addon swap' : '—');
+    const snap = bankSnapshotAt(history, iv.start);
+    const bank = snap
+      ? `${Math.round(snap.minerals)}m / ${Math.round(snap.gas)}g · sup ${snap.supply_used}/${snap.supply_max}`
+      : '—';
+    const orphanRow = isOrphan
+      ? `<div class="ptip-warn">⚠ no eligible producer was free at this time — likely a missing prereq</div>`
+      : '';
+    return `
+      <div class="ptip-title"><span class="ptip-name">${iv.name}</span><span class="ptip-kind">${role}</span></div>
+      <div class="ptip-row"><span>Window</span><span>${fmtTime(iv.start)} → ${fmtTime(iv.end)} <span class="ptip-mute">(${fmtTime(dur)})</span></span></div>
+      <div class="ptip-row"><span>Producer</span><span>${producerName}</span></div>
+      <div class="ptip-row"><span>Cost</span><span>${cost}</span></div>
+      <div class="ptip-row"><span>Bank at start</span><span>${bank}</span></div>
+      ${orphanRow}
+    `;
+  }
+
+  function prodTipIdleHtml(diag, start, end, producerName, history) {
+    const dur = end - start;
+    const snap = bankSnapshotAt(history, start);
+    const bank = snap
+      ? `${Math.round(snap.minerals)}m / ${Math.round(snap.gas)}g · sup ${snap.supply_used}/${snap.supply_max}`
+      : '—';
+    const causeLabel = diag.cause === 'supply' ? 'Supply blocked'
+      : diag.cause === 'resources' ? 'Saving for next listed step'
+      : 'Nothing listed';
+    // For resource-blocked gaps, list the other actions that were spending
+    // out of the same bank in/near this window — directly answering "why
+    // isn't the bank full?".
+    let competingHtml = '';
+    if (diag.competing && diag.competing.length) {
+      const rows = diag.competing.map(c => {
+        const cost = `${c.mins}m${c.gas ? ' + ' + c.gas + 'g' : ''}`;
+        const w = c.weight || 1;
+        // Highlight non-default weights so the user spots which steps
+        // already have priority bumps. ⚖N format mirrors the build-list chip.
+        const wClass = w > 1 ? 'ptip-weight ptip-weight-bump' : 'ptip-weight';
+        return `<div class="ptip-compete-row"><span>${c.name}</span><span class="ptip-mute">${fmtTime(c.start)}</span><span class="${wClass}">⚖${w}</span><span>${cost}</span></div>`;
+      }).join('');
+      competingHtml = `
+        <div class="ptip-compete">
+          <div class="ptip-compete-head">Fired in this window (in sim order)</div>
+          ${rows}
+        </div>
+      `;
+    }
+    return `
+      <div class="ptip-title ptip-idle-${diag.cause}">
+        <span class="ptip-name">Idle ${dur.toFixed(1)}s</span>
+        <span class="ptip-kind">${causeLabel}</span>
+      </div>
+      <div class="ptip-row"><span>Window</span><span>${fmtTime(start)} → ${fmtTime(end)}</span></div>
+      <div class="ptip-row"><span>Producer</span><span>${producerName}</span></div>
+      <div class="ptip-row"><span>Bank at start</span><span>${bank}</span></div>
+      <div class="ptip-text">${diag.text}</div>
+      ${competingHtml}
+    `;
+  }
 
   // Pick a CSS class per timeline-entry kind so the Gantt visually
   // distinguishes Unit / Addon / Upgrade / Morph at a glance. Useful when
@@ -3950,6 +4468,11 @@
           return {
             cause: 'resources',
             text: `Saving for ${e.name} (${lacking.join(', ')}) — bank wasn't full when slot freed.`,
+            // Surface other recent spends so the user can see what's
+            // draining the bank (e.g., a Tech Lab queued at the same
+            // instant, or several SCVs in close succession). 6s lookback
+            // catches most of the relevant pressure.
+            competing: collectCompetingSpends(timeline, start, end, nextForProd.id),
           };
         }
       }
@@ -3967,12 +4490,43 @@
     };
   }
 
+  // Steps that fired in or just before a resource-blocked gap. These are
+  // what was actually competing for the bank, so the user can decide which
+  // to delay, skip, or re-weight to clear the constraint. Sorted by fire
+  // time (chronological — the order the sim actually picked) so the user
+  // sees which spends won the bank in sequence; each row carries its
+  // weight so it's obvious which steps are already prioritised.
+  function collectCompetingSpends(timeline, start, end, excludeId) {
+    if (!Array.isArray(timeline)) return [];
+    const out = [];
+    const lookback = 6;  // sec — capture spends that drained the bank just before the gap
+    for (const t of timeline) {
+      if (t.start < start - lookback) continue;
+      if (t.start > end + 0.5) break;
+      if (t.id === excludeId) continue;  // already named as "saving for"
+      const mins = t.mins || 0;
+      const gas = t.gas || 0;
+      if (mins === 0 && gas === 0) continue;  // free actions don't compete
+      out.push({
+        id: t.id,
+        name: t.name,
+        start: t.start,
+        mins, gas,
+        weight: t.weight || 1,
+      });
+    }
+    // Chronological order (the sim's actual firing sequence) so the user
+    // can read down the list as "first this fired, then this, then this".
+    out.sort((a, b) => a.start - b.start);
+    return out.slice(0, 8);
+  }
+
   function renderProducerUtilization(util, eft, history, timeline) {
     if (!util.length || !eft) return '';
     const flaggedCount = util.filter(isProducerFlagged).length;
     const heading = flaggedCount
-      ? `<h3>Production efficiency <span class="prod-util-flag-pill">${flaggedCount} idle</span></h3>`
-      : `<h3>Production efficiency</h3>`;
+      ? `<h3>Idle producers <span class="prod-util-flag-pill">${flaggedCount} idle</span></h3>`
+      : `<h3>Idle producers</h3>`;
 
     const tStep = eft > 360 ? 60 : eft > 60 ? 30 : 15;
     const ticks = [];
@@ -3987,6 +4541,7 @@
       if (u.reactorCount > 0) labelParts.push(u.reactorCount > 1 ? `+${u.reactorCount} reactors` : '+reactor');
       const slotsLabel = labelParts.join(' ');
       const producerId = u.producer.id;
+      const producerName = u.producer.name;
       const tracks = u.lanes.map(lane => {
         const isOrphan = lane.type === 'orphan';
         const aliveEnd = Math.min(lane.tDeath === Infinity ? eft : lane.tDeath, eft);
@@ -3996,10 +4551,9 @@
         const segs = sortedIntervals.map(iv => {
           const left = pct(iv.start);
           const width = Math.max(0.4, pct(iv.end) - left);
-          const tipNote = isOrphan ? ' · ⚠ no eligible producer was free at this time' : '';
           const kindClass = prodSegKindClass(iv);
-          const t = `${iv.name} · ${fmtTime(iv.start)} → ${fmtTime(iv.end)} (${fmtTime(iv.end - iv.start)})${tipNote}`;
-          return `<div class="prod-util-seg${isOrphan ? ' prod-util-seg-orphan' : ''}${kindClass ? ' ' + kindClass : ''}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${t}"></div>`;
+          const tipHtml = prodTipBusyHtml(iv, isOrphan, producerName, history);
+          return `<div class="prod-util-seg${isOrphan ? ' prod-util-seg-orphan' : ''}${kindClass ? ' ' + kindClass : ''}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" data-prod-tip="${escAttr(tipHtml)}"></div>`;
         }).join('');
         // Idle segments — the gaps where the lane is alive but nothing
         // was scheduled. Each gets a hover tooltip with cause analysis,
@@ -4014,9 +4568,8 @@
               const diag = diagnoseIdleGap(cursor, iv.start, history, producerId, timeline);
               const left = pct(cursor);
               const width = Math.max(0.4, pct(iv.start) - left);
-              const dur = (iv.start - cursor).toFixed(1);
-              const tip = `Idle ${dur}s · ${fmtTime(cursor)} → ${fmtTime(iv.start)}\n${diag.text}`;
-              idleSegs += `<div class="prod-util-idle prod-util-idle-${diag.cause}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${tip}"></div>`;
+              const tipHtml = prodTipIdleHtml(diag, cursor, iv.start, producerName, history);
+              idleSegs += `<div class="prod-util-idle prod-util-idle-${diag.cause}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" data-prod-tip="${escAttr(tipHtml)}"></div>`;
             }
             cursor = Math.max(cursor, iv.end);
           }
@@ -4027,9 +4580,8 @@
             const diag = diagnoseIdleGap(cursor, aliveEnd, history, producerId, timeline);
             const left = pct(cursor);
             const width = Math.max(0.4, pct(aliveEnd) - left);
-            const dur = (aliveEnd - cursor).toFixed(1);
-            const tip = `Idle ${dur}s · ${fmtTime(cursor)} → ${fmtTime(aliveEnd)}\n${diag.text}`;
-            idleSegs += `<div class="prod-util-idle prod-util-idle-${diag.cause}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" title="${tip}"></div>`;
+            const tipHtml = prodTipIdleHtml(diag, cursor, aliveEnd, producerName, history);
+            idleSegs += `<div class="prod-util-idle prod-util-idle-${diag.cause}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%" data-prod-tip="${escAttr(tipHtml)}"></div>`;
           }
         }
         return `
@@ -4078,16 +4630,15 @@
       </div>
     `;
 
-    // Long builds compress badly inside a fixed-width container — give the
-    // inner block a min-width so each second gets at least ~2.5px, then let
-    // the section scroll horizontally.
-    const minWidthPx = Math.max(640, Math.round(eft * 2.5));
-
+    // Cap the Gantt to its container width — short builds get plenty of
+    // pixel-per-second; long builds compress to fit. Segments retain a
+    // 2px minimum visual width via .prod-util-seg's min-pixel rules so
+    // single-second actions stay hoverable even at 10+ minute builds.
     return `
       <div class="path-section collapsible-section" data-section-id="forge-producer-util">
         ${heading}
         <div class="prod-util-scroll">
-          <div class="prod-util" style="min-width:${minWidthPx}px">${rows}${axis}</div>
+          <div class="prod-util">${rows}${axis}</div>
         </div>
         ${legend}
       </div>
@@ -4205,7 +4756,7 @@
     return out;
   }
 
-  function renderResourceChart(history, eft) {
+  function renderResourceChart(history, eft, timeline) {
     if (!history || history.length < 2) return '<div class="forge-empty">Not enough data to chart.</div>';
     const W = 720, H = 232;
     // Top padding bumped to fit a thin icon strip above the plot area
@@ -4271,26 +4822,65 @@
     }
 
     // Detect supply-blocked intervals: stretches where supply_used has hit
-    // supply_max. Drawn as a red band along the bottom so the gap-causing
-    // periods stand out without obscuring the line plots.
-    const blockedIvs = [];
+    // supply_max. We only mark an interval as actually problematic if a
+    // unit was waiting on supply during it — sitting at cap with nothing
+    // queued is a strategic state, not a mistake. Cross-reference each
+    // interval against timeline entries with blockedBy='supply' (their
+    // wouldFireAt falls inside the cap window and they fired later).
+    const rawBlocked = [];
     let bStart = null;
     for (let i = 0; i < history.length; i++) {
       const h = history[i];
       const blocked = h.supply_max > 0 && h.supply_used >= h.supply_max;
       if (blocked && bStart == null) bStart = h.t;
       if (!blocked && bStart != null) {
-        if (h.t - bStart > 0.5) blockedIvs.push({ start: bStart, end: h.t });
+        if (h.t - bStart > 0.5) rawBlocked.push({ start: bStart, end: h.t });
         bStart = null;
       }
     }
-    if (bStart != null && tMax - bStart > 0.5) blockedIvs.push({ start: bStart, end: tMax });
+    if (bStart != null && tMax - bStart > 0.5) rawBlocked.push({ start: bStart, end: tMax });
+    // A "real" block is one where at least one supply-consuming step was
+    // actually delayed by it. We collect the names of the delayed units
+    // for each interval too, so the hover tooltip names them — answering
+    // "what couldn't I build?" directly.
+    const blockedIvs = (Array.isArray(timeline) && timeline.length)
+      ? rawBlocked.map(iv => {
+          const delayed = [];  // {name, count}
+          const seen = new Map();
+          for (const t of timeline) {
+            const e = SC2_DATA.entities[t.id];
+            const supplyCost = e && (e.supply || 0) > 0;
+            const delayedHere = (
+              t.blockedBy === 'supply'
+              && t.wouldFireAt != null
+              && t.wouldFireAt >= iv.start - 0.5
+              && t.wouldFireAt <= iv.end + 0.5
+            ) || (
+              supplyCost
+              && t.start >= iv.end - 0.6
+              && t.start <= iv.end + 0.6
+            );
+            if (delayedHere && t.name) {
+              seen.set(t.name, (seen.get(t.name) || 0) + 1);
+            }
+          }
+          for (const [name, count] of seen) delayed.push({ name, count });
+          return { ...iv, delayed };
+        }).filter(iv => iv.delayed.length > 0)
+      : rawBlocked.map(iv => ({ ...iv, delayed: [] }));
     const blockedBandY = H - PAD.bottom - 6;
     const blockedSvg = blockedIvs.map(iv => {
       const x = xS(iv.start);
       const w = Math.max(2, xS(iv.end) - x);
+      const dur = (iv.end - iv.start).toFixed(0);
+      const blockedNames = iv.delayed.length
+        ? iv.delayed.map(d => d.count > 1 ? `${d.name} ×${d.count}` : d.name).join(', ')
+        : '';
+      const tip = blockedNames
+        ? `Supply blocked ${fmtTime(iv.start)} → ${fmtTime(iv.end)} (${dur}s)\nDelayed: ${blockedNames}`
+        : `Supply blocked ${fmtTime(iv.start)} → ${fmtTime(iv.end)} (${dur}s)`;
       return `<rect x="${x.toFixed(1)}" y="${blockedBandY}" width="${w.toFixed(1)}" height="4" class="supply-blocked-band">
-        <title>Supply blocked ${fmtTime(iv.start)} → ${fmtTime(iv.end)} (${(iv.end - iv.start).toFixed(0)}s)</title>
+        <title>${tip}</title>
       </rect>`;
     }).join('');
 
@@ -4350,7 +4940,7 @@
     `;
   }
 
-  function attachChartHover(wrap, history, eft) {
+  function attachChartHover(wrap, history, eft, timeline) {
     if (!wrap) return;
     const svg = wrap.querySelector('svg');
     const tooltip = wrap.querySelector('.chart-tooltip');
@@ -4412,13 +5002,48 @@
       dotWorkers.setAttribute('cx', xS(h.t)); dotWorkers.setAttribute('cy', yS(wCount));
 
       const supplyBlocked = h.supply_max > 0 && h.supply_used >= h.supply_max;
+
+      // Step context: every action queued at the most-recent fire time
+      // at-or-before the cursor. SC2 builds frequently fire multiple
+      // things on the same frame (SCV from CC + Marine from Barracks at
+      // 1:59.2, or three units from a Reactor + Tech Lab Barracks at
+      // once), so showing only the latest single entry hides what's
+      // actually happening at that beat.
+      let contextHtml = '';
+      if (Array.isArray(timeline) && timeline.length) {
+        const NOW = h.t;
+        // Find latest start time ≤ NOW, then collect all entries within
+        // 0.1s of it (accounts for floating-point slop in sim.t).
+        let latestStart = -Infinity;
+        for (const ti of timeline) {
+          if (ti.start > NOW + 0.05) break;  // timeline sorted by start
+          if (ti.start > latestStart) latestStart = ti.start;
+        }
+        if (latestStart > -Infinity) {
+          const sameInstant = timeline.filter(ti =>
+            Math.abs(ti.start - latestStart) < 0.1 && ti.start <= NOW + 0.05);
+          const rows = sameInstant.map(ti => {
+            const e = SC2_DATA.entities[ti.id];
+            const icon = e ? iconHtml(e, { size: 18 }) : '';
+            return `<div class="tt-step">${icon}<span class="tt-step-name">${ti.name}</span></div>`;
+          }).join('');
+          contextHtml = `
+            <div class="tt-context">
+              <div class="tt-context-time">${fmtTime(latestStart)}</div>
+              ${rows}
+            </div>
+          `;
+        }
+      }
+
       tooltip.style.display = 'block';
       tooltip.innerHTML = `
         <div class="tt-time">${fmtTime(h.t)} game · ${fmtTime(h.t / SC2_DATA.speedMultiplier)} real</div>
-        <div class="tt-row"><span class="sw sw-min"></span>Minerals: <strong>${Math.round(h.minerals)}</strong> <span class="tt-rate">@ ${h.mineral_rate.toFixed(1)} m/s</span></div>
-        <div class="tt-row"><span class="sw sw-gas"></span>Gas: <strong>${Math.round(h.gas)}</strong> <span class="tt-rate">@ ${h.gas_rate.toFixed(1)} g/s</span></div>
+        <div class="tt-row"><span class="sw sw-min"></span>Minerals: <strong>${Math.round(h.minerals)}</strong> <span class="tt-rate">@ ${(h.mineral_rate * 60).toFixed(0)} m/min</span></div>
+        <div class="tt-row"><span class="sw sw-gas"></span>Gas: <strong>${Math.round(h.gas)}</strong> <span class="tt-rate">@ ${(h.gas_rate * 60).toFixed(0)} g/min</span></div>
         <div class="tt-row"><span class="sw sw-sup"></span>Supply: <strong>${h.supply_used}/${h.supply_max}</strong>${supplyBlocked ? ' <span class="tt-blocked">⚠ BLOCKED</span>' : ''}</div>
         <div class="tt-row tt-meta">Workers: ${h.mineral_workers + h.gas_workers} (${h.mineral_workers}m + ${h.gas_workers}g)</div>
+        ${contextHtml}
       `;
       // Position tooltip in pixel coords
       const tipX = ev.clientX - rect.left + 14;
@@ -4902,32 +5527,82 @@
       renderExplorer();
     });
 
-    // ---------- Build Forge ----------
-    document.getElementById('forge-race').addEventListener('change', e => {
-      if (state.forgeOrder.length && !confirm('Switching race will clear the current build. Continue?')) {
-        e.target.value = state.forgeRace;
-        return;
-      }
-      state.forgeRace = e.target.value;
-      state.forgeOrder = [];
-      state.forgeResult = null;
-      renderForge();
-      persistForge();
-    });
-    document.getElementById('forge-preset').addEventListener('change', e => {
-      const preset = (FORGE_PRESETS[state.forgeRace] || {})[e.target.value];
-      if (preset) {
-        state.forgeOrder = JSON.parse(JSON.stringify(preset));
-        state.forgeResult = null;
-        renderForge();
-        scheduleForgeRun();
-      }
-    });
+    // ---------- Global header: race drives every tab + the theme ----------
+    const globalRace = document.getElementById('global-race');
+    if (globalRace) {
+      globalRace.addEventListener('click', e => {
+        const btn = e.target.closest('.race-radio');
+        if (!btn) return;
+        const race = btn.dataset.race;
+        if (race === state.forgeRace) return;
+        // Forge holds a per-race build; switching race clears it (as before).
+        if (state.forgeOrder.length && !confirm('Switching race will clear the current build. Continue?')) {
+          return;
+        }
+        setGlobalRace(race, { clearForge: true });
+      });
+    }
+    const modeToggle = document.getElementById('global-mode');
+    if (modeToggle) {
+      modeToggle.addEventListener('click', e => {
+        const btn = e.target.closest('.mode-tab');
+        if (!btn) return;
+        const mode = btn.dataset.mode === 'ptr' ? 'ptr' : 'live';
+        if (mode === state.forgeMode) return;
+        state.forgeMode = mode;
+        syncForgeModeToggle();
+        scheduleForgeRun();   // re-simulates under the new ruleset + persists
+      });
+    }
+    const strictToggle = document.getElementById('forge-strict-order');
+    if (strictToggle) {
+      strictToggle.checked = state.forgeStrictOrder;
+      strictToggle.addEventListener('change', () => {
+        state.forgeStrictOrder = strictToggle.checked;
+        scheduleForgeRun();   // re-simulates + persists
+      });
+    }
+    // "Last updated" stamp in the global header — tells users how current the
+    // tool's data + mechanics are. Bump LAST_UPDATED when data/sim change.
+    const updatedEl = document.getElementById('global-updated');
+    if (updatedEl) updatedEl.textContent = `Updated ${LAST_UPDATED} · models PTR 5.0.16`;
+
+    // Prepend inline SVG icons onto any static button that declares data-icon
+    // (one source of truth with the dynamic uiIcon() calls).
+    for (const el of document.querySelectorAll('button[data-icon]')) {
+      el.insertAdjacentHTML('afterbegin', uiIcon(el.dataset.icon));
+    }
+
+    // (?) opens the "how it works" explanation as a modal (keeps the band
+    // between header and content clean).
+    const howtoBtn = document.getElementById('forge-howto-btn');
+    if (howtoBtn) {
+      howtoBtn.addEventListener('click', () => {
+        const content = document.getElementById('forge-howto-content');
+        if (!content) return;
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+          <div class="modal modal-wide howto-modal">
+            <div class="library-head">
+              <h4>How the Build Forge works</h4>
+              <button type="button" class="ghost icon-btn" data-act="close" title="Close">✕</button>
+            </div>
+            <div class="howto-modal-body">${content.innerHTML}</div>
+          </div>`;
+        document.body.appendChild(overlay);
+        const close = () => overlay.remove();
+        overlay.querySelector('[data-act="close"]').addEventListener('click', close);
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+        const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
+        document.addEventListener('keydown', onKey);
+      });
+    }
     document.getElementById('forge-clear').addEventListener('click', () => {
       if (state.forgeOrder.length && !confirm('Clear the entire build order?')) return;
       state.forgeOrder = [];
       state.forgeResult = null;
-      document.getElementById('forge-preset').value = '';
+      { const _ps = document.getElementById('forge-preset'); if (_ps) _ps.value = ''; }
       renderForge();
       persistForge();
     });
@@ -4994,10 +5669,6 @@
     if (swapBtn) {
       swapBtn.addEventListener('click', () => promptSwap());
     }
-    const fillBtn = document.getElementById('forge-fill-workers');
-    if (fillBtn) {
-      fillBtn.addEventListener('click', () => fillWorkers());
-    }
     const prioBtn = document.getElementById('forge-add-priority');
     if (prioBtn) {
       prioBtn.addEventListener('click', () => {
@@ -5012,6 +5683,43 @@
           }
         }
         state.forgeOrder.push({ kind: 'priority', order: seed });
+        renderForgeList();
+        scheduleForgeRun();
+      });
+    }
+    const gasBtn = document.getElementById('forge-add-gas');
+    if (gasBtn) {
+      gasBtn.addEventListener('click', () => {
+        // Quick prompt; UI affordance is the inline editor on the row.
+        // Default to -1 (a typical "pull one off gas" optimization).
+        const raw = window.prompt('Move workers between minerals and gas.\n\nPositive number = MOVE TO gas.\nNegative number = MOVE OFF gas.\n\nExample: -2 to pull 2 SCVs off gas.', '-1');
+        if (raw == null) return;
+        const delta = parseInt(raw.trim(), 10);
+        if (!Number.isFinite(delta) || delta === 0) return;
+        state.forgeOrder.push({ kind: 'worker_assign', delta });
+        renderForgeList();
+        scheduleForgeRun();
+      });
+    }
+    const idleBtn = document.getElementById('forge-add-idle');
+    if (idleBtn) {
+      idleBtn.addEventListener('click', () => {
+        const rawCount = window.prompt('Number of workers to mark idle (scouting, proxy, harass).', '1');
+        if (rawCount == null) return;
+        const count = Math.max(1, parseInt(rawCount.trim(), 10) || 0);
+        if (!count) return;
+        const rawDur = window.prompt('Duration (seconds) the worker is away.\n\n0 = permanently lost (e.g. died scouting).', '60');
+        if (rawDur == null) return;
+        const duration = Math.max(0, parseInt(rawDur.trim(), 10) || 0);
+        state.forgeOrder.push({ kind: 'worker_idle', count, duration });
+        renderForgeList();
+        scheduleForgeRun();
+      });
+    }
+    const tumourBtn = document.getElementById('forge-add-tumour');
+    if (tumourBtn) {
+      tumourBtn.addEventListener('click', () => {
+        state.forgeOrder.push({ kind: 'creep_tumour' });
         renderForgeList();
         scheduleForgeRun();
       });

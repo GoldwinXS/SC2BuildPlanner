@@ -832,3 +832,35 @@ const SC2_DATA = {
       prerequisites: ["evolution_chamber"], producedBy: "evolution_chamber" },
   },
 };
+
+// ============================================================
+// PTR 5.0.16 economy + per-entity overrides.
+//
+// Applied by simulator.js when simulateBuildOrder is called with {ptr:true}:
+// the start config feeds the Sim, and `entities` is shallow-merged over the
+// live entity table for the duration of that one (synchronous) run.
+//
+// Only fields that change build-order TIMINGS are modeled — i.e. mineral/gas
+// cost, supply cost, supply provided (`provides`), and build time. Pure combat
+// stats are irrelevant to this tool. Deliberately NOT modeled (and why):
+//   • Mineral-patch / geyser total changes — this sim has no patch-depletion
+//     curve, so per-base totals never affect early/mid-game timings.
+//   • Rich-vespene return 8→6 — rich geysers aren't modeled separately.
+//   • Warpgate "Transform to Warpgate" cost 0→50 — that's the per-Gateway
+//     morph cost; individual gateway→warpgate transforms aren't build steps
+//     here. (The Warp Gate *research* cost is unchanged.)
+//   • Carapace +2/+3 cost cuts — only the +1 upgrades exist in this dataset.
+SC2_DATA.ptr = {
+  // 12 → 8 starting workers (all races).
+  startWorkers: 8,
+  // Starting main's provided supply: Command Center / Nexus 15 → 13, and
+  // Zerg's Hatchery(6→4) + starting Overlord(8) → 12.
+  startSupply: { terran: 13, protoss: 13, zerg: 12 },
+  entities: {
+    ghost: { supply: 3 },                    // supply cost 2 → 3
+    command_center: { provides: 13 },        // provided supply 15 → 13
+    nexus: { provides: 13 },                 // provided supply 15 → 13
+    hatchery: { provides: 4 },               // provided supply 6 → 4 (Lair/Hive inherit)
+    z_carapace_1: { minerals: 100, gas: 100 }, // 150/150 → 100/100
+  },
+};

@@ -37,6 +37,29 @@ const SC2_SIM = (() => {
     mule_regen_time: 50 / 0.5625,  // seconds to regen enough energy for the next MULE
     mule_duration: 64,         // seconds the MULE actively mines
     mule_income_total: 270,    // minerals gathered per MULE drop
+    // Queen / Spawn Larva economy (LotV). A Queen spawns with 25 energy
+    // (can inject immediately), regenerates 0.5625 energy/s, and each inject
+    // costs 25 energy and yields 3 larvae — so a queen injects roughly every
+    // 25/0.5625 ≈ 44.4s. Creep Tumours draw from the same 25-energy pool, so
+    // making one delays the next inject. Inject larva are produced by discrete
+    // inject events (NOT the flat larvaRate) so they only exist once a Queen does.
+    queen_start_energy: 25,
+    queen_energy_regen: 0.5625,
+    queen_inject_energy: 25,
+    queen_inject_larvae: 3,
+    creep_tumour_energy: 25,
+    // Chrono Boost (Protoss). A Nexus regenerates 0.5625 energy/s; Chrono
+    // Boost costs 50 energy and runs a building in an accelerated (+50%) state
+    // for 20s, so it does 30s of work in 20s — i.e. a chrono'd task finishes
+    // up to ~10s sooner (or buildTime/3 for short tasks). Nexus starts at 0
+    // energy (LotV), so the first chrono lands ~89s in.
+    nexus_start_energy: 0,
+    nexus_energy_regen: 0.5625,
+    chrono_energy: 50,
+    chrono_duration: 20,   // a cast accelerates the building (+50%) for 20s
+    // Warp Gate (Protoss). Once researched, Gateway unit production speeds up
+    // (PTR 5.0.16: −35%). Live warp-in is modeled with the same speedup knob.
+    warpgate_speedup: 0.35,
   };
 
   const RACE_CFG = {
@@ -70,25 +93,44 @@ const SC2_SIM = (() => {
       this.cfg = cfg;
       this.opts = Object.assign({}, ECONOMY, opts);
 
+      // Starting worker count is normally per-race (RACE_CFG) but can be
+      // overridden via opts.start_workers — e.g. the PTR 5.0.16 ruleset,
+      // which drops every race from 12 to 8. (The PTR's mineral-patch and
+      // geyser total changes are NOT modeled: this sim has no patch-depletion
+      // curve, so those values have no effect on early/mid-game timings.)
+      const startWorkers = (opts.start_workers != null) ? opts.start_workers : cfg.start_workers;
+      // Starting supply (the pre-placed main's provided supply) can likewise
+      // be overridden — PTR drops CC/Nexus 15→13 and Zerg's hatch+overlord
+      // 14→12.
+      const startSupply = (opts.start_supply != null) ? opts.start_supply : cfg.start_supply;
+
       this.t = 0;
       this.minerals = 50;
       this.gas = 0;
-      this.supply_used = cfg.start_workers; // workers count toward supply
-      this.supply_max = cfg.start_supply;
+      this.supply_used = startWorkers; // workers count toward supply
+      this.supply_max = startSupply;
 
-      this.mineral_workers = cfg.start_workers; // mining from t=0 (startup_delay handled separately)
+      this.mineral_workers = startWorkers; // mining from t=0 (startup_delay handled separately)
       this.gas_workers = 0;
       this.gas_capacity = 0;
-      this.live_workers = cfg.start_workers; // alive count (mining or temporarily busy)
+      this.live_workers = startWorkers; // alive count (mining or temporarily busy)
 
       this.completed = new Map();
       this.completed.set(cfg.main, 1);
-      this.completed.set(cfg.worker, cfg.start_workers);
+      this.completed.set(cfg.worker, startWorkers);
       if (cfg.starting_overlord) this.completed.set('overlord', 1);
 
       this.producer_slots = new Map();   // structureId -> array of {end, strict}
       this.in_progress = new Map();      // entityId -> count
       this.active_mules = 0;             // count of MULEs currently mining
+      // Zerg queen energy economy (Spawn Larva injects + Creep Tumours).
+      this.queen_count = 0;              // completed queens
+      this.queen_energy = 0;             // shared energy pool across queens
+      this.injecting = 0;                // queens actively injecting (capped at base count)
+      // Protoss energy / production mode.
+      this.nexus_energy = this.opts.nexus_start_energy; // Chrono Boost pool
+      this.chrono_until = new Map();     // producerId -> time its chrono window ends
+      this.warpgate_researched = false;  // set when Warp Gate research completes
 
       // Larvae (Zerg only): a continuous pool that accumulates at
       //   bases × (1/11 natural + 3/29 from a perfect inject queue) per game
@@ -145,14 +187,14 @@ const SC2_SIM = (() => {
       return Math.min(this.gas_workers, this.gas_capacity) * this.opts.gas_rate;
     }
 
-    // Larva accumulation rate per game-second. Each base (Hatch/Lair/Hive)
-    // contributes 1/11 from natural regen + 3/29 from a perfect inject
-    // queue (assuming 1 idle Queen per base, injecting on cooldown). Capped
-    // at 19 larvae per base (3 base + 16 queued from injects).
+    // NATURAL larva accumulation per game-second: each base (Hatch/Lair/Hive)
+    // regenerates 1 larva every 11s up to 3. Inject larva are NOT included here
+    // — they come from discrete Queen inject events, so they only exist once a
+    // Queen has been built (previously this assumed a free perfect-inject queen
+    // from t=0, which over-produced larva in queenless openings like 8-pool).
     larvaRate() {
       if (this.race !== 'zerg') return 0;
-      const bases = this._numBases();
-      return bases * (1 / 11 + 3 / 29);
+      return this._numBases() * (1 / 11);
     }
     larvaCapacity() {
       if (this.race !== 'zerg') return 0;
@@ -168,7 +210,21 @@ const SC2_SIM = (() => {
           this.minerals += this.mineralIncomeRate() * dt;
           this.gas += this.gasIncomeRate() * dt;
           if (this.race === 'zerg') {
-            this.larvae = Math.min(this.larvaCapacity(), this.larvae + this.larvaRate() * dt);
+            // Natural regen only tops up to 3 larva per base; inject events can
+            // push above that (up to larvaCapacity). Don't let natural regen
+            // reduce an inject-boosted pool — only add when below the natural cap.
+            const naturalCap = this._numBases() * 3;
+            if (this.larvae < naturalCap) {
+              this.larvae = Math.min(naturalCap, this.larvae + this.larvaRate() * dt);
+            }
+            if (this.queen_count > 0) {
+              this.queen_energy = Math.min(this.queen_count * 200,
+                this.queen_energy + this.opts.queen_energy_regen * this.queen_count * dt);
+            }
+          } else if (this.race === 'protoss') {
+            const nexuses = Math.max(1, this._numBases());
+            this.nexus_energy = Math.min(nexuses * 200,
+              this.nexus_energy + this.opts.nexus_energy_regen * nexuses * dt);
           }
           this.t = stepTo;
         }
@@ -184,6 +240,15 @@ const SC2_SIM = (() => {
         // No-op; income rate now uses full mining
       } else if (evt.type === 'worker_returns') {
         this.mineral_workers += 1;
+        // Builder-walk events only return mineral_workers — the worker
+        // was always alive. Idle-marker events use restore:true to fully
+        // re-add the worker (supply, live, completed count) since the
+        // worker was pulled from all of those when sent idle.
+        if (evt.restore) {
+          this.live_workers += 1;
+          this.supply_used += 1;
+          this.completed.set(this.cfg.worker, (this.completed.get(this.cfg.worker) || 0) + 1);
+        }
       } else if (evt.type === 'swap_complete') {
         const toE = SC2_DATA.entities[evt.to];
         this.completed.set(evt.to, (this.completed.get(evt.to) || 0) + 1);
@@ -233,7 +298,33 @@ const SC2_SIM = (() => {
         if (id === 'orbital_command') {
           this._schedule(this.t + this.opts.mule_first_delay, { type: 'mule_drop' });
         }
+        // A Queen finishes with 25 energy — enough to inject right away. Add
+        // her to the energy pool and, if a hatchery still needs an injecting
+        // queen (one per base), start an inject chain.
+        if (id === 'queen') {
+          this.queen_count += 1;
+          this.queen_energy += this.opts.queen_start_energy;
+          if (this.injecting < this._numBases()) {
+            this.injecting += 1;
+            this._schedule(this.t, { type: 'inject' });
+          }
+        }
+        // Warp Gate research: from here on, Gateway units come out faster.
+        if (id === 'warpgate_research') this.warpgate_researched = true;
         this._addLog(`Completed: ${e.name}`);
+      } else if (evt.type === 'inject') {
+        // One injecting queen casts Spawn Larva: spend 25 energy → 3 larvae,
+        // then re-arm ~44s later. If energy is short (a Creep Tumour drained
+        // the pool), wait until it regenerates instead of injecting.
+        if (this.queen_energy >= this.opts.queen_inject_energy - 1e-9) {
+          this.queen_energy -= this.opts.queen_inject_energy;
+          this.larvae = Math.min(this.larvaCapacity(), this.larvae + this.opts.queen_inject_larvae);
+          this._schedule(this.t + this.opts.queen_inject_energy / this.opts.queen_energy_regen, { type: 'inject' });
+        } else {
+          const deficit = this.opts.queen_inject_energy - this.queen_energy;
+          const wait = deficit / (this.opts.queen_energy_regen * Math.max(1, this.queen_count));
+          this._schedule(this.t + Math.max(0.1, wait), { type: 'inject' });
+        }
       }
       this._recordHistory();
     }
@@ -283,6 +374,93 @@ const SC2_SIM = (() => {
       return this.supply_used + cost <= this.supply_max;
     }
 
+    // ============================================================
+    // Addon-class routing
+    // ============================================================
+    // The producer-slot pool isn't homogeneous — a Barracks with Tech Lab,
+    // a Barracks with Reactor, and a bare Barracks all count toward the
+    // "barracks" pool, but they're not interchangeable:
+    //   - Marauder needs a Tech Lab–attached Barracks slot.
+    //   - Marine can use any, but should prefer the Reactor (2 slots) so
+    //     the Tech Lab stays free for the Marauder.
+    //   - A new Tech Lab/Reactor must build on a no-addon Barracks.
+    // We tag each slot reservation with its addon class and route through
+    // the right sub-pool. classes:
+    //   'none'              — Barracks with no addon
+    //   'barracks_techlab'  — Barracks with Tech Lab (similarly factory/starport)
+    //   'barracks_reactor'  — Barracks with Reactor (capacity ×2 since Reactor doubles)
+
+    // Detect the addon a unit/upgrade requires for routing. Returns the
+    // addon entity id (e.g., 'barracks_techlab') or null.
+    _requiredAddon(e) {
+      for (const prereq of e.prerequisites || []) {
+        const pe = SC2_DATA.entities[prereq];
+        if (pe && pe.type === 'addon' && pe.producedBy === e.producedBy) return prereq;
+      }
+      return null;
+    }
+
+    // Capacity of (producer, addonClass). Reactor-class capacity doubles
+    // because a Reactor lets the host produce two light units at once.
+    _classCapacity(producer, addonClass) {
+      const total = this._countOf(producer);
+      if (addonClass === 'none') {
+        let attached = 0;
+        for (const id in SC2_DATA.entities) {
+          const ae = SC2_DATA.entities[id];
+          if (ae && ae.type === 'addon' && ae.producedBy === producer) {
+            attached += this.completed.get(id) || 0;
+          }
+        }
+        return total - attached;
+      }
+      const count = this.completed.get(addonClass) || 0;
+      if (/reactor/i.test(addonClass)) return count * 2;
+      return count;
+    }
+
+    // Active (non-expired) reservations on a given (producer, addonClass).
+    _classBusy(producer, addonClass) {
+      const slots = this.producer_slots.get(producer) || [];
+      let count = 0;
+      for (const r of slots) {
+        if (r.end <= this.t + 1e-9) continue;
+        if ((r.addonClass || 'none') === addonClass) count++;
+      }
+      return count;
+    }
+
+    // Pick the addon class to route this entity's slot through. Returns
+    // null if no class has free capacity (the entity can't queue here).
+    _pickAddonClass(e, producer) {
+      // Addon construction itself: must take a no-addon Barracks slot.
+      if (e.type === 'addon') {
+        return this._classCapacity(producer, 'none') > this._classBusy(producer, 'none')
+          ? 'none' : null;
+      }
+      const required = this._requiredAddon(e);
+      if (required) {
+        return this._classCapacity(producer, required) > this._classBusy(producer, required)
+          ? required : null;
+      }
+      // No specific addon needed. Prefer Reactor (most parallel slots),
+      // then no-addon, then Tech Lab — Tech Lab is the scarce resource
+      // for Marauder/Ghost/Cyclone/Tank/Banshee/Raven, so don't burn
+      // its slot on a Marine when other options exist.
+      const candidates = [];
+      for (const id in SC2_DATA.entities) {
+        const ae = SC2_DATA.entities[id];
+        if (ae && ae.type === 'addon' && ae.producedBy === producer) candidates.push(id);
+      }
+      const reactor = candidates.find(c => /reactor/i.test(c));
+      const techlab = candidates.find(c => /techlab/i.test(c));
+      const order = [reactor, 'none', techlab].filter(Boolean);
+      for (const cls of order) {
+        if (this._classCapacity(producer, cls) > this._classBusy(producer, cls)) return cls;
+      }
+      return null;
+    }
+
     canQueueProducer(e) {
       if (e.type === 'building' && !e.upgradeFrom) {
         return this.live_workers > 0; // need a worker to build
@@ -322,13 +500,15 @@ const SC2_SIM = (() => {
           }
         }
         if (existingAddons >= producerCount) return false;
-        return this.producerSlotsAvailable(producer) > 0;
+        return this._pickAddonClass(e, producer) !== null;
       }
       const producer = e.producedBy;
       if (!producer) return true;
       // _countOf so an Orbital Command answers "yes" to "is there a CC?".
       if (!(this._countOf(producer) > 0)) return false;
-      return this.producerSlotsAvailable(producer) > 0;
+      // Route via addon class so a Marauder requires a Tech Lab Barracks
+      // and a Marine prefers a Reactor (then no-addon, then Tech Lab).
+      return this._pickAddonClass(e, producer) !== null;
     }
 
     producerSlotsAvailable(producer, strict = false) {
@@ -408,6 +588,12 @@ const SC2_SIM = (() => {
       }
       c.in_progress = new Map(this.in_progress);
       c.active_mules = this.active_mules;
+      c.queen_count = this.queen_count;
+      c.queen_energy = this.queen_energy;
+      c.injecting = this.injecting;
+      c.nexus_energy = this.nexus_energy;
+      c.chrono_until = new Map(this.chrono_until);
+      c.warpgate_researched = this.warpgate_researched;
       c.larvae = this.larvae;
       c.timeline = this.timeline.slice();
       c.events = this.events.map(e => ({ ...e }));
@@ -416,12 +602,44 @@ const SC2_SIM = (() => {
       return c;
     }
 
-    queue(entityId) {
+    queue(entityId, queueOpts = {}) {
       const e = SC2_DATA.entities[entityId];
       if (!this.canQueue(e)) return { success: false };
 
       // Capture pre-pay snapshot for the timeline
       const resBefore = this.snapshot();
+
+      // Effective build time, after Protoss production modifiers:
+      //   • Warp Gate research speeds up Gateway unit production.
+      //   • Chrono Boost spends 50 Nexus energy to accelerate this one step.
+      let buildTime = e.buildTime;
+      if (this.warpgate_researched && e.type === 'unit' && e.producedBy === 'gateway') {
+        buildTime *= (1 - this.opts.warpgate_speedup);
+      }
+      // Chrono Boost is cast on a BUILDING and lasts 20s, accelerating whatever
+      // it produces during that window (+50% speed). So a cast on one step can
+      // spill its leftover window onto the NEXT unit from the same building.
+      const chronoProducer = e.upgradeFrom || e.producedBy;
+      const chronoable = (e.type === 'unit' || e.type === 'upgrade' || e.type === 'addon') && chronoProducer;
+      // 1) A step with the chrono flag casts (or extends) the window on its
+      //    producer, spending 50 Nexus energy.
+      if (queueOpts.chrono && this.race === 'protoss' && chronoable
+          && this.nexus_energy >= this.opts.chrono_energy - 1e-9) {
+        this.nexus_energy -= this.opts.chrono_energy;
+        const prev = this.chrono_until.get(chronoProducer) || 0;
+        this.chrono_until.set(chronoProducer, Math.max(prev, this.t) + this.opts.chrono_duration);
+      }
+      // 2) Any step (the caster OR a later spillover) is accelerated for the
+      //    real-time portion of its build that overlaps the window. With +50%
+      //    speed, the time saved is min(0.5 × boost-seconds-remaining, B/3).
+      let chronoed = false;
+      if (chronoable) {
+        const boostReal = Math.max(0, (this.chrono_until.get(chronoProducer) || 0) - this.t);
+        if (boostReal > 1e-9) {
+          const saving = Math.min(0.5 * boostReal, buildTime / 3);
+          if (saving > 0.05) { buildTime = Math.max(1, buildTime - saving); chronoed = true; }
+        }
+      }
 
       this.minerals -= e.minerals;
       this.gas -= (e.gas || 0);
@@ -447,16 +665,24 @@ const SC2_SIM = (() => {
       let producer = null;
       if (e.upgradeFrom) producer = e.upgradeFrom;
       else if (e.type === 'unit' || e.type === 'addon' || e.type === 'upgrade') producer = e.producedBy;
+      let addonClass = null;
       if (producer && !this.consumesLarva(e)) {
+        // Tag the reservation with the addon class it's consuming so
+        // canQueueProducer for later steps can correctly tell whether a
+        // Tech Lab Barracks vs a Reactor Barracks vs a no-addon Barracks
+        // is free. Falls back to 'none' for producers that don't have
+        // addon variants (CC/Nexus/Hatch and addons-as-producers like
+        // barracks_techlab itself).
+        addonClass = this._pickAddonClass(e, producer) || 'none';
         const slots = this.producer_slots.get(producer) || [];
-        slots.push({ end: this.t + e.buildTime, strict: !!e.upgradeFrom });
+        slots.push({ end: this.t + buildTime, strict: !!e.upgradeFrom, addonClass });
         this.producer_slots.set(producer, slots);
       }
 
       this.in_progress.set(entityId, (this.in_progress.get(entityId) || 0) + 1);
 
       const start = this.t;
-      const end = this.t + e.buildTime;
+      const end = this.t + buildTime;
       // Don't tie the complete event to a producer slot for larva-consumers —
       // we never reserved one above.
       const completeProducer = this.consumesLarva(e) ? null : producer;
@@ -466,6 +692,13 @@ const SC2_SIM = (() => {
         start, end, mins: e.minerals, gas: e.gas || 0,
         kind: classifyAction(e),
         resBefore,
+        chronoed,
+        // The exact addon-class slot the sim chose. The Gantt renderer
+        // uses this to place each interval on the right physical lane —
+        // so a Marauder that the sim routed to the Tech Lab Barracks
+        // shows up there, and a Reactor build doesn't visually land on
+        // a Barracks that already has a Tech Lab.
+        addonClass,
       });
       this._recordHistory();
       this._addLog(`Started: ${e.name} (${e.minerals}m${e.gas ? '+' + e.gas + 'g' : ''})`);
@@ -756,9 +989,45 @@ const SC2_SIM = (() => {
   // the smallest peek time (ties broken by original list index). This
   // produces a chronologically-correct timeline where independent
   // pools fire in parallel.
+  // Shallow-merge PTR field overrides over the live entity table, producing a
+  // fresh map (the originals are never mutated).
+  function mergePtrEntities(base, overrides) {
+    const merged = {};
+    for (const id in base) merged[id] = base[id];
+    for (const id in overrides) merged[id] = Object.assign({}, base[id], overrides[id]);
+    return merged;
+  }
+
   function simulateBuildOrder(buildOrder, opts = {}) {
     const race = opts.race || 'terran';
+
+    // PTR mode: temporarily swap in the overridden entity table and start
+    // config, then run the normal path via a single re-entry. The swap is
+    // restored in `finally` even if the run throws, so it can never leak into
+    // other tabs' simulations. simulateBuildOrder is fully synchronous, so the
+    // global swap is safe (no interleaving).
+    if (opts.ptr && SC2_DATA.ptr) {
+      const savedEntities = SC2_DATA.entities;
+      SC2_DATA.entities = mergePtrEntities(savedEntities, SC2_DATA.ptr.entities);
+      const ptrOpts = Object.assign({}, opts, {
+        ptr: false,  // prevent infinite re-entry
+        start_workers: SC2_DATA.ptr.startWorkers,
+        start_supply: SC2_DATA.ptr.startSupply[race],
+      });
+      try {
+        return simulateBuildOrder(buildOrder, ptrOpts);
+      } finally {
+        SC2_DATA.entities = savedEntities;
+      }
+    }
+
     const warnings = [];
+    // Strict order: when set, every step waits for the immediately preceding
+    // step (i-1) instead of only its same-pool predecessor. This collapses the
+    // parallel-lane model into a literal top-to-bottom sequence — less true to
+    // the game (a worker and a building really do build at once), but matches
+    // how some players read a written build order.
+    const strictOrder = !!opts.strictOrder;
 
     // Flatten the build order, expanding repeats into individual steps.
     // Priority markers are skipped (kept for forward compatibility).
@@ -768,7 +1037,31 @@ const SC2_SIM = (() => {
       if (!action) continue;
       if (action.kind === 'priority') continue;
       if (action.kind === 'swap') {
-        steps.push({ kind: 'swap', from: action.from, to: action.to, originalIndex: i });
+        steps.push({ kind: 'swap', from: action.from, to: action.to, originalIndex: i, weight: action.weight || 1 });
+        continue;
+      }
+      // Worker assignment: shift N workers between minerals and gas at this
+      // point in the build. Positive delta = move ONTO gas, negative = OFF.
+      if (action.kind === 'worker_assign') {
+        steps.push({ kind: 'worker_assign', delta: action.delta || 0, originalIndex: i, weight: action.weight || 1 });
+        continue;
+      }
+      // Worker idle: pull N workers off mining for D seconds (scouting,
+      // proxy walks, harass denial). duration=0 means permanent loss.
+      if (action.kind === 'worker_idle') {
+        steps.push({
+          kind: 'worker_idle',
+          count: Math.max(1, action.count || 1),
+          duration: Math.max(0, action.duration || 0),
+          originalIndex: i,
+          weight: action.weight || 1,
+        });
+        continue;
+      }
+      // Creep tumour: a Queen spends 25 energy laying a tumour at this point,
+      // draining the inject pool (may delay the next inject).
+      if (action.kind === 'creep_tumour') {
+        steps.push({ kind: 'creep_tumour', originalIndex: i, weight: action.weight || 1 });
         continue;
       }
       const entity = SC2_DATA.entities[action.entityId];
@@ -781,8 +1074,15 @@ const SC2_SIM = (() => {
         continue;
       }
       const repeat = Math.max(1, Math.min(50, action.repeat || 1));
+      const weight = action.weight || 1;
+      // Optional timing pin: fire no earlier than a supply count OR a clock
+      // time (floor semantics). When a step has repeat>1, every copy inherits
+      // the same floor — they still fire in sequence, just not before it.
+      const pinSupply = action.pinSupply;
+      const pinTime = action.pinTime;
+      const chrono = !!action.chrono;
       for (let r = 0; r < repeat; r++) {
-        steps.push({ entityId: action.entityId, originalIndex: i });
+        steps.push({ entityId: action.entityId, originalIndex: i, weight, pinSupply, pinTime, chrono });
       }
     }
 
@@ -801,10 +1101,26 @@ const SC2_SIM = (() => {
     // matching the player's actual click sequence into one Barracks slot.
     function poolKeyOf(step) {
       if (step.kind === 'swap') return null;
+      // Worker markers don't tie up any producer pool; they just mutate
+      // worker counts at their list position.
+      if (step.kind === 'worker_assign' || step.kind === 'worker_idle' || step.kind === 'creep_tumour') return null;
       const e = SC2_DATA.entities[step.entityId];
       if (!e) return null;
       if (e.upgradeFrom) return e.upgradeFrom;
-      if (e.producedBy) return e.producedBy;
+      if (e.producedBy) {
+        // Sub-pool by required addon when one is needed. A Marauder
+        // needs Tech Lab, so it competes only with other Tech-Lab-only
+        // entries (Ghost, Cyclone, Tank, Banshee, Raven, etc.) — NOT
+        // with regular Marines that can use any Barracks. This stops
+        // Marines from being pred-chained behind Marauders in list
+        // order, which was forcing serialization between two units
+        // that target physically different lanes.
+        for (const p of e.prerequisites || []) {
+          const pe = SC2_DATA.entities[p];
+          if (pe && pe.type === 'addon' && pe.producedBy === e.producedBy) return p;
+        }
+        return e.producedBy;
+      }
       return null;
     }
 
@@ -823,7 +1139,10 @@ const SC2_SIM = (() => {
     for (let i = 0; i < steps.length; i++) {
       steps[i].pool = poolKeyOf(steps[i]);
       const preds = new Set();
-      if (steps[i].pool != null) {
+      if (strictOrder) {
+        // Literal sequence: depend on the previous step regardless of pool.
+        if (i > 0) preds.add(i - 1);
+      } else if (steps[i].pool != null) {
         for (let j = i - 1; j >= 0; j--) {
           if (steps[j].pool === steps[i].pool) { preds.add(j); break; }
         }
@@ -854,15 +1173,29 @@ const SC2_SIM = (() => {
       }
       if (candidates.length === 0) break;
 
+      // Pick the best candidate. Sort key: weight DESC (higher priority
+      // wins outright), peek time ASC, originalIndex ASC. The default
+      // weight is 1, so an all-default build sorts purely by peek time —
+      // identical to the prior behavior. A step with weight=2 will always
+      // fire before any weight=1 candidate that's also queueable, even if
+      // the weight=1 candidate could fire earlier. Use this when you want
+      // a specific decision (Orbital, Stargate, Lair) to "hold the bank"
+      // ahead of routine production.
+      function isBetter(idx, peeked, curIdx, curTime) {
+        if (curIdx < 0) return true;
+        const a = steps[idx].weight || 1;
+        const b = steps[curIdx].weight || 1;
+        if (a !== b) return a > b;
+        if (peeked.time !== curTime) return peeked.time < curTime;
+        return steps[idx].originalIndex < steps[curIdx].originalIndex;
+      }
       let bestIdx = -1;
       let bestTime = Infinity;
       let bestResult = null;
       for (const i of candidates) {
         const peeked = peekStep(sim, steps[i]);
         if (!peeked.ok) continue;
-        const tieIdx = bestIdx >= 0 ? steps[bestIdx].originalIndex : Infinity;
-        if (peeked.time < bestTime
-            || (peeked.time === bestTime && steps[i].originalIndex < tieIdx)) {
+        if (isBetter(i, peeked, bestIdx, bestTime)) {
           bestIdx = i;
           bestTime = peeked.time;
           bestResult = peeked;
@@ -876,14 +1209,12 @@ const SC2_SIM = (() => {
         //   - A unit was listed before its tech building (Marine before
         //     Barracks), so the unit's tech check fails forever
         // Fall back to ANY unplaced step that can fire, bypassing strict
-        // list-order so the build keeps progressing.
+        // list-order so the build keeps progressing. Weight still matters.
         for (let i = 0; i < steps.length; i++) {
           if (placed[i] || failed[i]) continue;
           const peeked = peekStep(sim, steps[i]);
           if (!peeked.ok) continue;
-          const tieIdx = bestIdx >= 0 ? steps[bestIdx].originalIndex : Infinity;
-          if (peeked.time < bestTime
-              || (peeked.time === bestTime && steps[i].originalIndex < tieIdx)) {
+          if (isBetter(i, peeked, bestIdx, bestTime)) {
             bestIdx = i;
             bestTime = peeked.time;
             bestResult = peeked;
@@ -914,13 +1245,25 @@ const SC2_SIM = (() => {
       if (sim.t < bestTime) sim.advanceTo(bestTime);
       if (step.kind === 'swap') {
         applySwap(sim, step.from, step.to);
+      } else if (step.kind === 'worker_assign') {
+        applyWorkerAssign(sim, step.delta);
+      } else if (step.kind === 'worker_idle') {
+        applyWorkerIdle(sim, step.count, step.duration);
+      } else if (step.kind === 'creep_tumour') {
+        applyCreepTumour(sim);
       } else {
         const before = sim.timeline.length;
-        sim.queue(step.entityId);
-        if (sim.timeline.length > before && (bestResult.blockedBy || bestResult.wouldFireAt != null)) {
+        sim.queue(step.entityId, { chrono: step.chrono });
+        if (sim.timeline.length > before) {
           const entry = sim.timeline[sim.timeline.length - 1];
-          entry.blockedBy = bestResult.blockedBy;
-          entry.wouldFireAt = bestResult.wouldFireAt;
+          // Stamp the step's weight onto the timeline entry so the UI
+          // can show priority info on hover (e.g., "competing for bank"
+          // lists weight per row to clarify which step the sim picked).
+          entry.weight = step.weight || 1;
+          if (bestResult.blockedBy || bestResult.wouldFireAt != null) {
+            entry.blockedBy = bestResult.blockedBy;
+            entry.wouldFireAt = bestResult.wouldFireAt;
+          }
         }
       }
       placed[bestIdx] = true;
@@ -956,7 +1299,13 @@ const SC2_SIM = (() => {
       const r = walkUntilSwap(clone, step.from, step.to);
       return r.ok ? { ok: true, time: clone.t } : { ok: false, reason: r.reason };
     }
-    const r = walkUntilQueueable(clone, step.entityId);
+    // Worker markers fire instantly at their list position — they don't
+    // wait on producer slots, supply, tech, or resources. Just commit at
+    // the current sim time once predecessors are placed.
+    if (step.kind === 'worker_assign' || step.kind === 'worker_idle' || step.kind === 'creep_tumour') {
+      return { ok: true, time: clone.t };
+    }
+    const r = walkUntilQueueable(clone, step.entityId, { pinSupply: step.pinSupply, pinTime: step.pinTime });
     return r.ok
       ? { ok: true, time: clone.t, blockedBy: r.blockedBy, wouldFireAt: r.wouldFireAt }
       : { ok: false, reason: r.reason };
@@ -967,7 +1316,7 @@ const SC2_SIM = (() => {
   // fix it), return ok=false with a reason. Records the moment the
   // constraint LAST became blocked, so the UI can show "delayed by
   // resources / supply / tech / producer".
-  function walkUntilQueueable(sim, entityId) {
+  function walkUntilQueueable(sim, entityId, pin = {}) {
     const entity = SC2_DATA.entities[entityId];
     if (!entity) return { ok: false, reason: 'unknown entity' };
     const startT = sim.t;
@@ -978,14 +1327,42 @@ const SC2_SIM = (() => {
       const supplyOk = sim.canSatisfySupply(entity);
       const producerOk = sim.canQueueProducer(entity);
       const affordOk = sim.canAfford(entity);
+      // Optional timing pin (floor): the step may not fire before a clock
+      // time OR a supply count. Only one anchor is ever set per step.
+      const pinOk =
+        (pin.pinTime == null || sim.t >= pin.pinTime - 1e-9) &&
+        (pin.pinSupply == null || sim.supply_used >= pin.pinSupply);
 
-      if (techOk && supplyOk && producerOk && affordOk) {
+      if (techOk && supplyOk && producerOk && affordOk && pinOk) {
         // Step fires at sim.t. Compute "would have fired at" as the time
         // the last blocking constraint cleared (= startT if nothing ever
         // blocked, or the time we last advanced for a tech/supply/producer
         // event if resources were the final blocker).
         const wouldFireAt = lastBlockReason ? startT : sim.t;
         return { ok: true, blockedBy: lastBlockReason, wouldFireAt };
+      }
+
+      // Everything else is ready but the timing pin hasn't cleared — advance
+      // toward the floor. A time pin clears deterministically; a supply pin
+      // only rises via already-scheduled completion events (no new steps are
+      // queued in this clone walk), so if none remain it is unreachable.
+      if (techOk && supplyOk && producerOk && affordOk && !pinOk) {
+        lastBlockReason = 'timing';
+        if (pin.pinTime != null && sim.t < pin.pinTime) {
+          sim.advanceTo(pin.pinTime + 0.001);
+          continue;
+        }
+        if (pin.pinSupply != null) {
+          const nextEvt = nextStateChangingEvent(sim);
+          if (!isFinite(nextEvt)) {
+            return { ok: false, reason: `timing pin unreachable — supply never reaches ${pin.pinSupply} in this build` };
+          }
+          sim.advanceTo(nextEvt + 0.001);
+          continue;
+        }
+        // Defensive: pin flagged but neither anchor advanceable — bail out
+        // rather than spin.
+        return { ok: false, reason: 'timing pin could not be satisfied' };
       }
 
       // Tech / supply / producer can only change when a build event
@@ -1099,12 +1476,122 @@ const SC2_SIM = (() => {
     sim._addLog(`Addon swap: ${fromEntity.name} → ${toEntity.name}`);
   }
 
+  // Apply a worker assignment marker at sim.t. Positive delta moves N
+  // workers from minerals to gas (capped by gas_capacity and available
+  // mineral workers); negative delta moves N off gas back to minerals.
+  // Pushes a 0-duration timeline entry so the UI can show "applied at
+  // T:TT" on the build-list row instead of "not yet executed".
+  // Lay a Creep Tumour: a Queen spends 25 energy from the shared inject pool.
+  // Draining it can push the next inject later (the energy/inject tradeoff).
+  function applyCreepTumour(sim) {
+    const resBefore = sim.snapshot();
+    const cost = sim.opts.creep_tumour_energy;
+    const had = sim.queen_energy >= cost - 1e-9;
+    if (had) sim.queen_energy = Math.max(0, sim.queen_energy - cost);
+    const label = sim.queen_count === 0
+      ? 'Creep tumour (no Queen yet — no energy spent)'
+      : had ? 'Creep tumour (−25 Queen energy)'
+            : 'Creep tumour (not enough Queen energy)';
+    sim._addLog(label);
+    sim._recordHistory();
+    sim.timeline.push({
+      id: '_creep_tumour',
+      name: label,
+      type: 'marker',
+      kind: 'creep_tumour',
+      race: sim.race,
+      start: sim.t, end: sim.t,
+      mins: 0, gas: 0,
+      resBefore,
+    });
+  }
+
+  function applyWorkerAssign(sim, delta) {
+    if (!delta) return;
+    const resBefore = sim.snapshot();
+    let move = 0;
+    let label = '';
+    if (delta > 0) {
+      const room = Math.max(0, sim.gas_capacity - sim.gas_workers);
+      move = Math.min(delta, room, sim.mineral_workers);
+      if (move > 0) {
+        sim.mineral_workers -= move;
+        sim.gas_workers += move;
+      }
+      label = `Move ${move || delta} ${move === 1 ? 'worker' : 'workers'} onto gas`;
+    } else {
+      move = Math.min(-delta, sim.gas_workers);
+      if (move > 0) {
+        sim.gas_workers -= move;
+        sim.mineral_workers += move;
+      }
+      label = `Move ${move || -delta} ${move === 1 ? 'worker' : 'workers'} off gas`;
+    }
+    sim._addLog(label);
+    sim._recordHistory();
+    sim.timeline.push({
+      id: '_worker_assign',
+      name: label,
+      type: 'marker',
+      kind: 'worker_assign',
+      race: sim.race,
+      start: sim.t, end: sim.t,
+      mins: 0, gas: 0,
+      resBefore,
+      delta,
+    });
+  }
+
+  // Apply a worker-idle marker at sim.t. Pulls N workers from mineral
+  // mining; if duration > 0, schedules them to return after that many
+  // seconds. duration === 0 means permanent loss.
+  function applyWorkerIdle(sim, count, duration) {
+    const resBefore = sim.snapshot();
+    const pull = Math.min(count, sim.mineral_workers);
+    let label = '';
+    if (pull > 0) {
+      sim.mineral_workers -= pull;
+      sim.live_workers -= pull;
+      sim.supply_used = Math.max(0, sim.supply_used - pull);
+      sim.completed.set(sim.cfg.worker, Math.max(0, (sim.completed.get(sim.cfg.worker) || 0) - pull));
+      if (duration > 0) {
+        // Schedule N return events at t + duration. The existing
+        // worker_returns handler bumps mineral_workers / live_workers / supply
+        // by 1, so N events restore N workers.
+        for (let k = 0; k < pull; k++) {
+          sim._schedule(sim.t + duration, { type: 'worker_returns', restore: true });
+        }
+        label = `${pull} ${pull === 1 ? 'worker' : 'workers'} idle for ${duration.toFixed(0)}s`;
+      } else {
+        label = `${pull} ${pull === 1 ? 'worker' : 'workers'} permanently lost`;
+      }
+    } else {
+      label = `${count} idle ${count === 1 ? 'worker' : 'workers'} (none available)`;
+    }
+    sim._addLog(label);
+    sim._recordHistory();
+    sim.timeline.push({
+      id: '_worker_idle',
+      name: label,
+      type: 'marker',
+      kind: 'worker_idle',
+      race: sim.race,
+      start: sim.t, end: sim.t + duration,
+      mins: 0, gas: 0,
+      resBefore,
+      count: pull,
+      duration,
+    });
+  }
+
   // Time of the next event that could affect tech / producer / supply
   // checks. Skips resource-only events (MULE drop/end, worker_returns)
   // because they keep firing indefinitely once an Orbital is built.
   function nextStateChangingEvent(sim) {
     for (const evt of sim.events) {
-      if (evt.type === 'complete' || evt.type === 'swap_complete' || evt.type === 'startup_done') {
+      // 'inject' adds larva, which can unblock a larva-gated Zerg step.
+      if (evt.type === 'complete' || evt.type === 'swap_complete'
+          || evt.type === 'startup_done' || evt.type === 'inject') {
         return evt.t;
       }
     }
