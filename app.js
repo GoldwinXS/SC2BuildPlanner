@@ -3141,7 +3141,7 @@
       const chronoCls = chronoNoEnergy ? 'forge-chrono forge-chrono-noenergy'
         : chronoOn ? 'forge-chrono forge-chrono-set'
         : chronoSpill ? 'forge-chrono forge-chrono-spill' : 'forge-chrono';
-      const chronoTitle = chronoNoEnergy ? 'Chrono requested, but the Nexus had no energy here (a cast costs 50; the Nexus starts at 50 and regens ~0.56/s, so back-to-back casts must wait). No boost applied. Click to turn off.'
+      const chronoTitle = chronoNoEnergy ? 'Chrono requested, but the Nexus had no energy here. A cast costs 50; the Nexus starts at 50 (one cast) and banks the next over ~90s of in-game time (energy regenerates 0.5625 per game-second = 0.7875 per real-second on Faster). No boost applied. Click to turn off.'
         : chronoOn ? 'Chrono-boosted here (50 Nexus energy). Click to turn off.'
         : chronoSpill ? 'Caught the leftover Chrono Boost from an earlier cast on this building. Click to also cast here.'
         : 'Chrono Boost this step — spends 50 Nexus energy to finish it sooner. Click to enable.';
