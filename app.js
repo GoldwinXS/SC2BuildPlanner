@@ -957,6 +957,7 @@
     download: '<path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/>',
     flask:    '<path d="M9 3h6"/><path d="M10 3v6l-5 8a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-8V3"/><path d="M7.5 14h9"/>',
     trash:    '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
+    loop:     '<path d="M4 9a8 8 0 0 1 13.5-3.5L20 8"/><path d="M20 4v4h-4"/><path d="M20 15a8 8 0 0 1-13.5 3.5L4 16"/><path d="M4 20v-4h4"/>',
   };
   function uiIcon(name, cls) {
     const inner = UI_ICONS[name];
@@ -1213,6 +1214,8 @@
           cleaned.push({ kind: 'worker_idle', count, duration, weight: cleanWeight(step.weight) });
         } else if (step && step.kind === 'creep_tumour') {
           cleaned.push({ kind: 'creep_tumour', weight: cleanWeight(step.weight) });
+        } else if (step && step.kind === 'extractor_trick') {
+          cleaned.push({ kind: 'extractor_trick', weight: cleanWeight(step.weight) });
         } else if (step && step.entityId && SC2_DATA.entities[step.entityId]) {
           // Optional timing pin — fire no earlier than a supply count OR a
           // clock time (only one anchor active). Must be explicitly carried
@@ -2664,6 +2667,8 @@
     // Terran-only. Hide the ones that don't apply to the current race.
     const tumourBtn = document.getElementById('forge-add-tumour');
     if (tumourBtn) tumourBtn.style.display = state.forgeRace === 'zerg' ? '' : 'none';
+    const extractorBtn = document.getElementById('forge-add-extractor-trick');
+    if (extractorBtn) extractorBtn.style.display = state.forgeRace === 'zerg' ? '' : 'none';
     const swapBtn2 = document.getElementById('forge-add-swap');
     if (swapBtn2) swapBtn2.style.display = state.forgeRace === 'terran' ? '' : 'none';
     populateForgePresets();
@@ -3148,10 +3153,15 @@
       // with the economy detail (banks, income rates) kept muted alongside.
       const timeStr = `<span class="forge-state-time">${fmtTimeBoth(queuedAt)}</span>`;
       const supplyChip = `<span class="forge-state-supply">${res ? res.supply_used + '/' + res.supply_max : ''}</span>`;
+      // Larva count at this moment (Zerg only) — so you can see when larva, not
+      // resources, is the bottleneck.
+      const larvaChip = (state.forgeRace === 'zerg' && res && typeof res.larvae === 'number')
+        ? `<span class="forge-state-larva" title="Larvae available across all hatcheries at this point">${Math.floor(res.larvae + 1e-6)}L</span>`
+        : '';
       const stateLine = res
         ? (compact
-            ? `<span class="forge-state">${timeStr} ${supplyChip}</span>`
-            : `<span class="forge-state">${timeStr} ${supplyChip} <span class="forge-state-econ">${Math.round(res.minerals)}m / ${Math.round(res.gas)}g · ${(res.mineral_rate * 60).toFixed(0)} m/min${res.gas_rate > 0 ? ' · ' + (res.gas_rate * 60).toFixed(0) + ' g/min' : ''}</span></span>${delayLine}`)
+            ? `<span class="forge-state">${timeStr} ${supplyChip} ${larvaChip}</span>`
+            : `<span class="forge-state">${timeStr} ${supplyChip} ${larvaChip} <span class="forge-state-econ">${Math.round(res.minerals)}m / ${Math.round(res.gas)}g · ${(res.mineral_rate * 60).toFixed(0)} m/min${res.gas_rate > 0 ? ' · ' + (res.gas_rate * 60).toFixed(0) + ' g/min' : ''}</span></span>${delayLine}`)
         : warning
           ? `<span class="forge-state forge-state-warn" title="${reasonOnly}">⚠ ${reasonOnly}</span>`
           : '<span class="forge-state forge-state-pending">— not yet executed —</span>';
@@ -3271,6 +3281,30 @@
               ${weightChip}
               <input class="forge-repeat" type="number" min="1" max="22" value="${count}" title="Worker count" data-act="idle-count" />
               <input class="forge-repeat" type="number" min="0" max="999" value="${duration}" title="Duration in seconds (0 = permanent)" data-act="idle-duration" />
+              <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
+            </div>
+          </div>
+        `;
+      }
+
+      // Extractor-trick marker (Zerg) — frees 1 supply for one extra unit.
+      if (step.kind === 'extractor_trick') {
+        return `
+          <div class="forge-row forge-row-marker" data-idx="${i}" draggable="true">
+            <div class="forge-handle" title="Drag to reorder">⋮⋮</div>
+            <div class="forge-num">${i + 1}</div>
+            <div class="forge-action">
+              <div class="forge-action-main">
+                <span class="entity-icon marker-icon" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-3);color:var(--accent);font-size:15px;">${uiIcon('loop')}</span>
+                <div class="forge-action-text">
+                  <div class="forge-name">Extractor trick <span class="forge-lane">+1 supply room</span></div>
+                  ${stateLine}
+                </div>
+              </div>
+              <div class="forge-cost">marker</div>
+            </div>
+            <div class="forge-controls">
+              ${weightChip}
               <button type="button" class="forge-del" data-act="delete" title="Remove">×</button>
             </div>
           </div>
@@ -5728,6 +5762,14 @@
     if (tumourBtn) {
       tumourBtn.addEventListener('click', () => {
         state.forgeOrder.push({ kind: 'creep_tumour' });
+        renderForgeList();
+        scheduleForgeRun();
+      });
+    }
+    const extractorBtn = document.getElementById('forge-add-extractor-trick');
+    if (extractorBtn) {
+      extractorBtn.addEventListener('click', () => {
+        state.forgeOrder.push({ kind: 'extractor_trick' });
         renderForgeList();
         scheduleForgeRun();
       });

@@ -21,8 +21,7 @@ const SC2_DATA = {
     "Default ladder speed is 'Faster', which runs game time at 1.4× real-time.",
     "Earliest timings assume infinite resources and that every prerequisite is started the instant it becomes possible.",
     "Pylon power, Creep, and worker travel time are NOT modeled. In practice these add a few seconds.",
-    "For Protoss, Warp Gate research is not used — Gateway training times are shown.",
-    "For Zerg, larva availability is assumed to never bottleneck.",
+    "Build Forge models Protoss Warp Gate (research speeds Gateway unit production), Chrono Boost (Nexus energy), and Zerg Queen injects + larva — so they can bottleneck a build. The quick-reference tabs (Tech Explorer, Window Lookup) use Gateway production times and assume ideal larva.",
   ],
 
   entities: {

@@ -48,6 +48,11 @@ const SC2_SIM = (() => {
     queen_inject_energy: 25,
     queen_inject_larvae: 3,
     creep_tumour_energy: 25,
+    // Extractor trick: a drone morphs into an Extractor (leaving the supply
+    // count) to free 1 supply for one extra unit, then the Extractor is
+    // cancelled (75% mineral refund) and the drone returns. This is how long
+    // the drone sits in the Extractor before the cancel.
+    extractor_trick_duration: 12,
     // Chrono Boost (Protoss). A Nexus starts with 50 energy (LotV — enough for
     // one Chrono Boost immediately at game start) and regenerates 0.5625
     // energy/s. Chrono Boost costs 50 energy and runs a building in an
@@ -262,6 +267,12 @@ const SC2_SIM = (() => {
         this._schedule(this.t + this.opts.mule_regen_time, { type: 'mule_drop' });
       } else if (evt.type === 'mule_end') {
         this.active_mules = Math.max(0, this.active_mules - 1);
+      } else if (evt.type === 'extractor_return') {
+        // Extractor cancelled: the drone returns to mining and the supply count.
+        // (The refund is already netted into the up-front cost.)
+        this.mineral_workers += 1;
+        this.supply_used += 1;
+        this.completed.set('drone', (this.completed.get('drone') || 0) + 1);
       } else if (evt.type === 'complete') {
         const e = SC2_DATA.entities[evt.entityId];
         const id = evt.entityId;
@@ -1064,6 +1075,10 @@ const SC2_SIM = (() => {
         steps.push({ kind: 'creep_tumour', originalIndex: i, weight: action.weight || 1 });
         continue;
       }
+      if (action.kind === 'extractor_trick') {
+        steps.push({ kind: 'extractor_trick', originalIndex: i, weight: action.weight || 1 });
+        continue;
+      }
       const entity = SC2_DATA.entities[action.entityId];
       if (!entity) {
         warnings.push({ index: i, msg: `Unknown entity: ${action.entityId}` });
@@ -1103,7 +1118,7 @@ const SC2_SIM = (() => {
       if (step.kind === 'swap') return null;
       // Worker markers don't tie up any producer pool; they just mutate
       // worker counts at their list position.
-      if (step.kind === 'worker_assign' || step.kind === 'worker_idle' || step.kind === 'creep_tumour') return null;
+      if (step.kind === 'worker_assign' || step.kind === 'worker_idle' || step.kind === 'creep_tumour' || step.kind === 'extractor_trick') return null;
       const e = SC2_DATA.entities[step.entityId];
       if (!e) return null;
       if (e.upgradeFrom) return e.upgradeFrom;
@@ -1251,6 +1266,8 @@ const SC2_SIM = (() => {
         applyWorkerIdle(sim, step.count, step.duration);
       } else if (step.kind === 'creep_tumour') {
         applyCreepTumour(sim);
+      } else if (step.kind === 'extractor_trick') {
+        applyExtractorTrick(sim);
       } else {
         const before = sim.timeline.length;
         sim.queue(step.entityId, { chrono: step.chrono });
@@ -1302,7 +1319,7 @@ const SC2_SIM = (() => {
     // Worker markers fire instantly at their list position — they don't
     // wait on producer slots, supply, tech, or resources. Just commit at
     // the current sim time once predecessors are placed.
-    if (step.kind === 'worker_assign' || step.kind === 'worker_idle' || step.kind === 'creep_tumour') {
+    if (step.kind === 'worker_assign' || step.kind === 'worker_idle' || step.kind === 'creep_tumour' || step.kind === 'extractor_trick') {
       return { ok: true, time: clone.t };
     }
     const r = walkUntilQueueable(clone, step.entityId, { pinSupply: step.pinSupply, pinTime: step.pinTime });
@@ -1503,6 +1520,33 @@ const SC2_SIM = (() => {
       start: sim.t, end: sim.t,
       mins: 0, gas: 0,
       resBefore,
+    });
+  }
+
+  // Extractor trick: free 1 supply by morphing a drone into an Extractor, then
+  // cancel it (the drone returns ~12s later with a 75% refund). Lets a Zerg
+  // squeeze one extra unit out of a capped supply count.
+  function applyExtractorTrick(sim) {
+    const resBefore = sim.snapshot();
+    let label;
+    if (sim.race !== 'zerg') {
+      label = 'Extractor trick — Zerg only';
+    } else if (sim.mineral_workers < 1) {
+      label = 'Extractor trick — no drone available';
+    } else {
+      // Net cost of the start-then-cancel (25 paid, ~19 refunded on cancel).
+      sim.minerals = Math.max(0, sim.minerals - 6);
+      sim.mineral_workers -= 1;                   // drone stops mining (income dip)
+      sim.supply_used = Math.max(0, sim.supply_used - 1); // drone leaves the supply count
+      sim.completed.set('drone', Math.max(0, (sim.completed.get('drone') || 0) - 1));
+      sim._schedule(sim.t + sim.opts.extractor_trick_duration, { type: 'extractor_return' });
+      label = 'Extractor trick — +1 supply room (drone returns shortly)';
+    }
+    sim._addLog(label);
+    sim._recordHistory();
+    sim.timeline.push({
+      id: '_extractor_trick', name: label, type: 'marker', kind: 'extractor_trick',
+      race: sim.race, start: sim.t, end: sim.t, mins: 0, gas: 0, resBefore,
     });
   }
 

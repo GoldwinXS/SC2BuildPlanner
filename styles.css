@@ -1745,6 +1745,14 @@ button.ghost {
   margin-left: 2px;
 }
 .forge-state-econ { color: var(--text-3); margin-left: 2px; }
+.forge-state-larva {
+  color: var(--zerg);
+  background: var(--zerg-soft);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-left: 2px;
+  font-weight: 600;
+}
 .forge-state-pending { color: var(--text-3); font-style: italic; }
 .forge-state-warn {
   color: var(--warn);
